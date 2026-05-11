@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file CHANGELOG.md
+
+  build:
+    needs: create
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive_ext: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive_ext: tar.gz
+          - goos: darwin
+            goarch: amd64
+            archive_ext: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive_ext: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive_ext: zip
+          - goos: windows
+            goarch: arm64
+            archive_ext: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          MODULE=$(go list -m)
+          NAME=$(echo "$MODULE" | sed 's|.*/||')
+          VERSION="${GITHUB_REF_NAME}"
+          EXT=${{ matrix.goos == 'windows' && '.exe' || '' }}
+          ARCHIVE="${NAME}-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.${{ matrix.archive_ext }}"
+          go build -ldflags "-X ${MODULE}/version.Version=${VERSION}" -o "bin/${NAME}${EXT}" .
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            zip -j "bin/${ARCHIVE}" "bin/${NAME}${EXT}"
+          else
+            tar -czf "bin/${ARCHIVE}" -C bin "${NAME}${EXT}"
+          fi
+          gh release upload "$GITHUB_REF_NAME" "bin/${ARCHIVE}"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish release and clear changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+          > CHANGELOG.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "Clear changelog after $GITHUB_REF_NAME"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
