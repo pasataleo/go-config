@@ -13,10 +13,19 @@ import (
 // environment variables, flags, config files). Implementations are called for
 // every exported field in the struct, including struct-typed fields, and should
 // handle struct-typed fields gracefully (e.g. return nil/false).
+// A Source that needs the Config itself should implement Initializer rather
+// than reach for it per-field.
 type Source interface {
 	Name() string
-	Find(cfg *Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (interface{}, error)
-	Assign(cfg *Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (bool, error)
+	Find(path reflectx.Path, value reflect.Value, field reflect.StructField) (interface{}, error)
+	Assign(path reflectx.Path, value reflect.Value, field reflect.StructField) (bool, error)
+}
+
+// Initializer is an optional interface for Sources that need access to the
+// full Config before it is used. New calls Init on every source that
+// implements it, in source order, before returning.
+type Initializer interface {
+	Init(cfg *Config) error
 }
 
 // Config holds an ordered list of sources for populating struct fields.
@@ -27,7 +36,41 @@ type Config struct {
 
 // New creates a Config with the given sources. Sources are tried in order
 // during Assign, so earlier sources take priority.
-func New(sources ...Source) *Config {
+//
+// Any source implementing Initializer is initialized here, in source order,
+// and the first failure aborts with a nil Config. A source whose Init failed
+// may be left half-initialized and should be discarded rather than reused.
+//
+// Initialization runs user code (see inject.Source and its modules), so New
+// can panic as well as return an error - the same programmer errors that
+// Bind and BindFunc panic on now surface here.
+func New(sources ...Source) (*Config, error) {
+	cfg := newConfig(sources...)
+	for _, source := range cfg.sources {
+		init, ok := source.(Initializer)
+		if !ok {
+			continue
+		}
+		if err := init.Init(cfg); err != nil {
+			return nil, errorsx.Annotate(err, "source", source.Name())
+		}
+	}
+	return cfg, nil
+}
+
+// Must is New for callers that treat a failed source as unrecoverable, which
+// is the common case at program startup. It panics instead of returning an
+// error.
+func Must(sources ...Source) *Config {
+	cfg, err := New(sources...)
+	if err != nil {
+		panic(err)
+	}
+	return cfg
+}
+
+// newConfig builds a Config without initializing its sources.
+func newConfig(sources ...Source) *Config {
 	return &Config{
 		sources: sources,
 	}
@@ -47,7 +90,7 @@ func (config *Config) Find(v interface{}) map[string]map[string]interface{} {
 		var errs error
 		fs := map[string]interface{}{}
 		for _, source := range config.sources {
-			if found, err := source.Find(config, path, value, field); err != nil {
+			if found, err := source.Find(path, value, field); err != nil {
 				errs = errorsx.Append(errs, err)
 				continue
 			} else if found != nil {
@@ -76,7 +119,7 @@ func (config *Config) Assign(v interface{}) error {
 	return reflectx.Walk(v, func(path reflectx.Path, value reflect.Value, field reflect.StructField) error {
 		var errs error
 		for _, source := range config.sources {
-			f, err := source.Assign(config, path, value, field)
+			f, err := source.Assign(path, value, field)
 			if err != nil {
 				errs = errorsx.Append(errs, err)
 			}
@@ -93,11 +136,14 @@ func (config *Config) Assign(v interface{}) error {
 //
 // Note: Find will initialize nil pointer fields in v as a side effect of
 // traversal.
+//
+// Find does not initialize the source. Introspection should not run the side
+// effects of an Initializer, so bindings that only exist after initialization
+// (for example those registered by inject modules) are not reported here.
 func Find(source Source, v interface{}) map[string]interface{} {
-	cfg := New(source)
 	found := map[string]interface{}{}
 	err := reflectx.Walk(v, func(path reflectx.Path, value reflect.Value, field reflect.StructField) error {
-		if f, err := source.Find(cfg, path, value, field); err != nil {
+		if f, err := source.Find(path, value, field); err != nil {
 			return err
 		} else if f != nil {
 			found[path.String()] = f
@@ -116,13 +162,15 @@ func Find(source Source, v interface{}) map[string]interface{} {
 	return found
 }
 
-// Assign populates the exported fields of v using a single source.
+// Assign populates the exported fields of v using a single source. Unlike
+// Find, this initializes the source first, so an Initializer runs against a
+// Config containing only that source.
 func Assign(source Source, v interface{}) error {
-	cfg := New(source)
-	return reflectx.Walk(v, func(path reflectx.Path, value reflect.Value, field reflect.StructField) error {
-		_, err := source.Assign(cfg, path, value, field)
+	cfg, err := New(source)
+	if err != nil {
 		return err
-	})
+	}
+	return cfg.Assign(v)
 }
 
 func FilterBySource[T any](found map[string]map[string]interface{}, want string) map[string]T {

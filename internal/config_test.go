@@ -25,7 +25,7 @@ func TestConfigAssign(t *testing.T) {
 		}
 		in := &cfg{}
 		want := &cfg{Host: "localhost", Port: 8080}
-		c := config.New(new(defaults.Source))
+		c := config.Must(new(defaults.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -37,7 +37,7 @@ func TestConfigAssign(t *testing.T) {
 		t.Setenv("TEST_CFG_ENV_OVERRIDE", "remotehost")
 		in := &cfg{}
 		want := &cfg{Host: "remotehost"}
-		c := config.New(new(env.Source), new(defaults.Source))
+		c := config.Must(new(env.Source), new(defaults.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -48,7 +48,7 @@ func TestConfigAssign(t *testing.T) {
 		}
 		in := &cfg{}
 		want := &cfg{Host: "localhost"}
-		c := config.New(new(env.Source), new(defaults.Source))
+		c := config.Must(new(env.Source), new(defaults.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -60,7 +60,7 @@ func TestConfigAssign(t *testing.T) {
 		t.Setenv("TEST_CFG_FLAG_OVERRIDE", "envhost")
 		in := &cfg{}
 		want := &cfg{Host: "flaghost"}
-		c := config.New(
+		c := config.Must(
 			flags.NewSource(map[string][]string{"host": {"flaghost"}}),
 			new(env.Source),
 			new(defaults.Source),
@@ -76,7 +76,7 @@ func TestConfigAssign(t *testing.T) {
 		t.Setenv("TEST_CFG_FLAG_FALLTHROUGH", "envhost")
 		in := &cfg{}
 		want := &cfg{Host: "envhost"}
-		c := config.New(
+		c := config.Must(
 			flags.NewSource(nil),
 			new(env.Source),
 			new(defaults.Source),
@@ -91,7 +91,7 @@ func TestConfigAssign(t *testing.T) {
 		}
 		in := &cfg{}
 		want := &cfg{Host: "localhost"}
-		c := config.New(new(defaults.Source), new(required.Source))
+		c := config.Must(new(defaults.Source), new(required.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -103,7 +103,7 @@ func TestConfigAssign(t *testing.T) {
 		t.Setenv("TEST_CFG_REQUIRED_ENV", "envhost")
 		in := &cfg{}
 		want := &cfg{Host: "envhost"}
-		c := config.New(new(env.Source), new(required.Source))
+		c := config.Must(new(env.Source), new(required.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -113,7 +113,7 @@ func TestConfigAssign(t *testing.T) {
 			Host string `required:"--host"`
 		}
 		in := &cfg{}
-		c := config.New(new(defaults.Source), new(required.Source))
+		c := config.Must(new(defaults.Source), new(required.Source))
 		testingx.Call(t, c.Assign, in).Error()
 	})
 
@@ -123,7 +123,7 @@ func TestConfigAssign(t *testing.T) {
 			Port int    `required:"--port"`
 		}
 		in := &cfg{}
-		c := config.New(new(required.Source))
+		c := config.Must(new(required.Source))
 		err := c.Assign(in)
 		testingx.Capture(t, err).
 			HasError("required value not set: --host")
@@ -141,7 +141,7 @@ func TestConfigAssign(t *testing.T) {
 		injector.Bind(&Logger{Name: "test"}, "logger")
 		in := &cfg{}
 		want := &cfg{Host: "localhost", Logger: &Logger{Name: "test"}}
-		c := config.New(injector, new(defaults.Source))
+		c := config.Must(injector, new(defaults.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -155,7 +155,7 @@ func TestConfigAssign(t *testing.T) {
 		injector.Bind(42)
 		in := &cfg{}
 		want := &cfg{Name: "app", Count: 42}
-		c := config.New(injector, new(defaults.Source))
+		c := config.Must(injector, new(defaults.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -175,7 +175,7 @@ func TestConfigAssign(t *testing.T) {
 			Database: database{Host: "dbhost", Port: 9999},
 			Name:     "flagapp",
 		}
-		c := config.New(
+		c := config.Must(
 			flags.NewSource(map[string][]string{
 				"db-port": {"9999"},
 				"name":    {"flagapp"},
@@ -196,7 +196,7 @@ func TestConfigAssign(t *testing.T) {
 		}
 		in := &cfg{}
 		want := &cfg{Name: "app", Port: 8080, Rate: 1.5, Verbose: true}
-		c := config.New(new(defaults.Source))
+		c := config.Must(new(defaults.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -210,7 +210,7 @@ func TestConfigAssign(t *testing.T) {
 		t.Setenv("TEST_CFG_PARTIAL_NAME", "myapp")
 		in := &cfg{}
 		want := &cfg{Host: "flaghost", Port: 8080, Name: "myapp"}
-		c := config.New(
+		c := config.Must(
 			flags.NewSource(map[string][]string{"host": {"flaghost"}}),
 			new(env.Source),
 			new(defaults.Source),
@@ -223,68 +223,54 @@ func TestConfigAssign(t *testing.T) {
 func TestConfigAssignModules(t *testing.T) {
 	t.Run("basic_module", func(t *testing.T) {
 		type cfg struct {
-			DB       *dbModuleWrapper `inject:"database"`
-			ConnInfo string           `inject:"conn"`
+			ConnInfo string `inject:"conn"`
 		}
 
 		injector := inject.New()
-		injector.Bind(&dbModuleWrapper{}, "database")
+		injector.Register(&dbModuleWrapper{})
 		in := &cfg{}
-		want := &cfg{
-			DB:       &dbModuleWrapper{Host: "localhost", Port: 5432},
-			ConnInfo: "localhost:5432",
-		}
-		c := config.New(injector, new(defaults.Source))
+		want := &cfg{ConnInfo: "localhost:5432"}
+		c := config.Must(injector, new(defaults.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
 
 	t.Run("module_install_error", func(t *testing.T) {
-		type cfg struct {
-			Mod errorModuleWrapper `inject:"bad"`
-		}
+		// Modules are installed by config.New, so the failure lands there.
 		injector := inject.New()
-		injector.Bind(&errorModuleWrapper{}, "bad")
-		in := &cfg{}
-		c := config.New(injector)
-		testingx.Call(t, c.Assign, in).Error()
+		injector.Register(&errorModuleWrapper{})
+		testingx.Call(t, config.New, injector).Error()
 	})
 
 	t.Run("module_chaining", func(t *testing.T) {
 		// First module provides a prefix, second module uses it to provide a greeting
 		type cfg struct {
-			First   prefixModuleWrapper   `inject:"prefix-mod"`
-			Second  greetingModuleWrapper `inject:"greeting-mod"`
-			Message string                `inject:"message"`
+			Message string `inject:"message"`
 		}
 		injector := inject.New()
-		injector.Bind(&prefixModuleWrapper{}, "prefix-mod")
-		injector.Bind(&greetingModuleWrapper{}, "greeting-mod")
+		// Registration order is dependency order, and holding the module lets
+		// the test read its state back afterwards.
+		second := &greetingModuleWrapper{}
+		injector.Register(&prefixModuleWrapper{}, second)
 		in := &cfg{}
-		want := &cfg{
-			First:   prefixModuleWrapper{Prefix: "hello"},
-			Second:  greetingModuleWrapper{Greeting: "hello world"},
-			Message: "hello world",
-		}
-		c := config.New(injector, new(defaults.Source))
+		c := config.Must(injector, new(defaults.Source))
 		testingx.Call(t, c.Assign, in).NoError()
-		testingx.Capture(t, in).Equal(want)
+		testingx.Capture(t, in).Equal(&cfg{Message: "hello world"})
+		testingx.Capture(t, second.Greeting).Equal("hello world")
 	})
 
 	t.Run("module_with_env", func(t *testing.T) {
 		type cfg struct {
-			Mod      envModuleWrapper `inject:"env-mod"`
-			ConnInfo string           `inject:"env-conn"`
+			ConnInfo string `inject:"env-conn"`
 		}
+		// Module fields are read during config.New, so the environment has to
+		// be set up before it rather than before Assign.
 		t.Setenv("TEST_MODULE_HOST", "remotehost")
 		injector := inject.New()
-		injector.Bind(&envModuleWrapper{}, "env-mod")
+		injector.Register(&envModuleWrapper{})
 		in := &cfg{}
-		want := &cfg{
-			Mod:      envModuleWrapper{Host: "remotehost"},
-			ConnInfo: "remotehost:configured",
-		}
-		c := config.New(injector, new(env.Source))
+		want := &cfg{ConnInfo: "remotehost:configured"}
+		c := config.Must(injector, new(env.Source))
 		testingx.Call(t, c.Assign, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
@@ -343,7 +329,7 @@ func TestConfigFind(t *testing.T) {
 			Host string `default:"localhost" env:"APP_HOST" flag:"host" required:"--host"`
 		}
 		in := &cfg{}
-		c := config.New(
+		c := config.Must(
 			flags.NewSource(nil),
 			new(env.Source),
 			new(defaults.Source),
@@ -372,7 +358,7 @@ func TestConfigFind(t *testing.T) {
 			Database database
 		}
 		in := &cfg{}
-		c := config.New(new(env.Source), new(defaults.Source))
+		c := config.Must(new(env.Source), new(defaults.Source))
 		testingx.Call(t, c.Find, in).
 			Equal(map[string]map[string]interface{}{
 				"Database.Host": {

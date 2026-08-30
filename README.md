@@ -22,7 +22,7 @@ type Config struct {
 var cfg Config
 args, values := flags.Parse(os.Args[1:])
 
-c := config.New(
+c := config.Must(
     flags.NewSource(values),  // highest priority
     &env.Source{},
     &defaults.Source{},
@@ -42,10 +42,13 @@ Sources are tried in order — the first source that provides a value for a fiel
 
 Core package. Defines the `Source` interface and the `Config` type that composes sources with priority ordering.
 
-- `config.New(sources ...Source)` — create a config with ordered sources
+- `config.New(sources ...Source) (*Config, error)` — create a config with ordered sources
+- `config.Must(sources ...Source) *Config` — the same, panicking instead of returning an error
 - `config.Find(source, v)` — query a single source for all fields
 - `config.Assign(source, v)` — populate fields from a single source
 - `config.FilterBySource[T](found, name)` — filter `Find` results by source name
+
+`New` returns an error because sources may need to initialize. A source that implements `config.Initializer` has its `Init(cfg *Config)` called by `New`, in source order, once the full source list is known — this is how `inject` installs its modules.
 
 ### `flags`
 
@@ -72,6 +75,8 @@ Dependency injection for struct fields, matched by `inject` struct tag or by typ
 
 - `source.Bind(value, tags...)` — bind a static value
 - `source.BindFunc(fn, tags...)` — bind a factory function that receives the current field value
+- `inject.Get[T](source)` — read the value bound to `T`
+- `inject.GetTag[T](source, tag)` — read the value bound to a tag
 
 ### `required`
 
@@ -87,7 +92,7 @@ Extracts usage descriptions via the `usage` struct tag. Metadata-only — does n
 
 ### `inject` — Modules
 
-Modules extend the inject system to support swappable, self-configuring components. A module is a struct that implements `inject.Module` — after the framework populates the module's own fields (env vars, flags, injected values from earlier modules), it calls `Install`, which registers new bindings on the inject source.
+Modules extend the inject system to support swappable, self-configuring components. A module is a struct that implements `inject.Module`:
 
 ```go
 type Module interface {
@@ -95,13 +100,12 @@ type Module interface {
 }
 ```
 
-When `inject.Source.Assign` assigns a value to a field and the concrete value implements `Module`, it:
+Register modules on the injector and `config.New` installs them all before anything else touches the config. Installing a module:
 
-1. Populates the module's own fields using the full config (all sources).
+1. Populates the module's own fields using the full config — flags, env vars, defaults, and bindings from modules installed before it.
 2. Calls `module.Install(s)` so the module can register new bindings.
-3. Returns — subsequent fields in the struct tree can use the new bindings.
 
-Struct field order is dependency order — earlier modules' bindings are available to later modules and fields.
+Registration order is dependency order: a module can use bindings registered by modules registered before it.
 
 #### Example
 
@@ -125,29 +129,54 @@ type MyHandler struct {
 }
 
 type App struct {
-    DB      *DatabaseModule `inject:"database"` // populated first, Install binds *sql.DB
-    Handler *MyHandler                          // populated second, receives *sql.DB via inject
+    Handler *MyHandler // receives *sql.DB via inject
 }
 
 injector := inject.New()
-injector.Bind(&DatabaseModule{}, "database")
+injector.Register(&DatabaseModule{})
 
-c := config.New(injector, &env.Source{}, &defaults.Source{})
+c := config.Must(injector, &env.Source{}, &defaults.Source{})
 c.Assign(&app)
 ```
 
+Registering a module does not bind it, so the module itself is not injectable. Keep your own pointer to it if you need to read its state afterwards, or have it call `s.Bind(m)` from within `Install`.
+
+#### Modules installing modules
+
+A module can install further modules from inside its own `Install`. Those complete before `Install` continues, so the parent can read what they bound:
+
+```go
+func (m *ServerModule) Install(s *inject.Source) error {
+    if err := s.Install(&DatabaseModule{}); err != nil {
+        return err
+    }
+
+    db, err := inject.Get[*sql.DB](s)
+    if err != nil {
+        return err
+    }
+
+    s.Bind(NewServer(db))
+    return nil
+}
+```
+
+`Register` and `Install` cover the two phases and each panics if used in the other's: `Register` queues a module for the next `config.New`, `Install` installs one immediately and is only valid while modules are installing. A module that transitively installs itself is reported as a cycle rather than overflowing the stack.
+
+Note that installing a module populates its fields from every source, so pre-setting a field in code (`&Child{Host: "x"}`) is not reliable — env, flags and inject will all overwrite it. Configure children through bindings instead.
+
 #### Swappability
 
-Modules are bound by tag (or type), so swapping implementations is straightforward:
+Swapping implementations is a matter of registering a different module:
 
 ```go
 // Production
 injector := inject.New()
-injector.Bind(&DatabaseModule{}, "database")
+injector.Register(&DatabaseModule{})
 
 // Test
 injector := inject.New()
-injector.Bind(&TestDatabaseModule{}, "database")
+injector.Register(&TestDatabaseModule{})
 ```
 
 Both implement `Module`. The test module can provide mock bindings without needing real env vars or flags.

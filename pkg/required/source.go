@@ -18,7 +18,7 @@ func (s *Source) Name() string {
 	return "required"
 }
 
-func (s *Source) Find(_ *config.Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (interface{}, error) {
+func (s *Source) Find(path reflectx.Path, value reflect.Value, field reflect.StructField) (interface{}, error) {
 	name, ok := field.Tag.Lookup("required")
 	if !ok {
 		return nil, nil
@@ -26,7 +26,7 @@ func (s *Source) Find(_ *config.Config, path reflectx.Path, value reflect.Value,
 	return name, nil
 }
 
-func (s *Source) Assign(_ *config.Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (bool, error) {
+func (s *Source) Assign(path reflectx.Path, value reflect.Value, field reflect.StructField) (bool, error) {
 	name, ok := field.Tag.Lookup("required")
 	if !ok {
 		return false, nil

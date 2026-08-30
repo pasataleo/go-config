@@ -19,7 +19,7 @@ func (s *Source) Name() string {
 	return "env"
 }
 
-func (s *Source) Find(_ *config.Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (interface{}, error) {
+func (s *Source) Find(path reflectx.Path, value reflect.Value, field reflect.StructField) (interface{}, error) {
 	tag, ok := field.Tag.Lookup("env")
 	if !ok {
 		return nil, nil
@@ -30,7 +30,7 @@ func (s *Source) Find(_ *config.Config, path reflectx.Path, value reflect.Value,
 	return tag, nil
 }
 
-func (s *Source) Assign(_ *config.Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (bool, error) {
+func (s *Source) Assign(path reflectx.Path, value reflect.Value, field reflect.StructField) (bool, error) {
 	tag, ok := field.Tag.Lookup("env")
 	if !ok {
 		return false, nil

@@ -181,70 +181,293 @@ func (m *chainingModule) Install(s *Source) error {
 	return nil
 }
 
-func TestAssignModule(t *testing.T) {
+func TestRegister(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		type cfg struct {
-			Mod    *staticModule `inject:"mod"`
-			Result string        `inject:"provided"`
+			Result string `inject:"provided"`
 		}
 		s := New()
-		s.Bind(&staticModule{}, "mod")
+		s.Register(&staticModule{})
 		in := &cfg{}
-		want := &cfg{
-			Mod:    &staticModule{},
-			Result: "installed-value",
-		}
+		want := &cfg{Result: "installed-value"}
 		testingx.Call(t, Assign, s, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
 
 	t.Run("install_error", func(t *testing.T) {
-		type cfg struct {
-			Mod *errorModule `inject:"mod"`
-		}
 		s := New()
-		s.Bind(&errorModule{}, "mod")
-		in := &cfg{}
-		testingx.Call(t, Assign, s, in).Error()
+		s.Register(&errorModule{})
+		testingx.Call(t, Assign, s, &struct{}{}).Error()
 	})
 
 	t.Run("chaining", func(t *testing.T) {
 		type cfg struct {
-			First  *staticModule   `inject:"first"`
-			Second *chainingModule `inject:"second"`
-			Result string          `inject:"greeting"`
+			Result string `inject:"greeting"`
 		}
 		s := New()
-		s.Bind(&staticModule{}, "first")
-		s.Bind(&chainingModule{}, "second")
-		// staticModule.Install binds "installed-value" to "provided"
-		// chainingModule has Prefix `inject:"prefix"` — bind that too
+		// chainingModule has Prefix `inject:"prefix"` — bind that first.
 		s.Bind("hello", "prefix")
+		s.Register(&staticModule{}, &chainingModule{})
 		in := &cfg{}
-		want := &cfg{
-			First:  &staticModule{},
-			Second: &chainingModule{Prefix: "hello"},
-			Result: "hello world",
-		}
+		want := &cfg{Result: "hello world"}
 		testingx.Call(t, Assign, s, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
 
-	t.Run("by_type", func(t *testing.T) {
+	t.Run("module_is_not_bound", func(t *testing.T) {
+		// Register installs a module, it does not bind it.
+		s := New()
+		s.Register(&staticModule{})
+		testingx.Call(t, Assign, s, &struct{}{}).NoError()
+		testingx.Call(t, Get[*staticModule], s).ErrorCode(NotBound)
+	})
+
+	t.Run("caller_keeps_the_pointer", func(t *testing.T) {
+		// Reading module state back means holding onto the module yourself.
+		mod := &chainingModule{}
+		s := New()
+		s.Bind("hello", "prefix")
+		s.Register(mod)
+		testingx.Call(t, Assign, s, &struct{}{}).NoError()
+		testingx.Capture(t, mod.Prefix).Equal("hello")
+	})
+
+	t.Run("invalid_module", func(t *testing.T) {
+		s := New()
+		s.Register((*staticModule)(nil))
+		testingx.Call(t, Assign, s, &struct{}{}).ErrorCode(InvalidModule)
+	})
+
+	t.Run("register_during_init_panics", func(t *testing.T) {
+		s := New()
+		s.Register(&registeringModule{})
+		testingx.Panics(t, nil, Assign, s, &struct{}{}).
+			Contains("Register called during Init")
+	})
+
+	t.Run("install_outside_init_panics", func(t *testing.T) {
+		s := New()
+		testingx.Panics(t, nil, s.Install, &staticModule{}).
+			Contains("Install called outside Init")
+	})
+
+	t.Run("duplicate_install_panics", func(t *testing.T) {
+		// Two modules binding the same tag is a programmer error, and the
+		// panic names the module that hit it.
+		s := New()
+		s.Register(&staticModule{}, &staticModule{})
+		testingx.Panics(t, nil, Assign, s, &struct{}{}).
+			Contains("while installing *inject.staticModule")
+	})
+
+	t.Run("second_init_is_a_no_op", func(t *testing.T) {
+		// Installing twice would panic on the duplicate binding.
+		s := New()
+		s.Register(&staticModule{})
+		testingx.Call(t, Assign, s, &struct{}{}).NoError()
+		testingx.Call(t, Assign, s, &struct{}{}).NoError()
+	})
+}
+
+// registeringModule calls Register at a point where only Install is legal.
+type registeringModule struct{}
+
+func (m *registeringModule) Install(s *Source) error {
+	s.Register(&staticModule{})
+	return nil
+}
+
+// Nested module types.
+
+// bundleModule installs a child and then uses what the child bound.
+type bundleModule struct{}
+
+func (m *bundleModule) Install(s *Source) error {
+	if err := s.Install(&childModule{}); err != nil {
+		return err
+	}
+	child, err := GetTag[string](s, "child")
+	if err != nil {
+		return err
+	}
+	s.Bind(child+"+bundle", "bundle")
+	return nil
+}
+
+type childModule struct{}
+
+func (m *childModule) Install(s *Source) error {
+	s.Bind("child", "child")
+	return nil
+}
+
+// siblingModule is registered after bundleModule and depends on the binding
+// the bundle's child registered.
+type siblingModule struct {
+	Child string `inject:"child"`
+}
+
+func (m *siblingModule) Install(s *Source) error {
+	s.Bind(m.Child+"+sibling", "sibling")
+	return nil
+}
+
+type outerModule struct{}
+
+func (m *outerModule) Install(s *Source) error {
+	order = append(order, "outer-start")
+	if err := s.Install(&bundleModule{}); err != nil {
+		return err
+	}
+	order = append(order, "outer-end")
+	return nil
+}
+
+// order records completion ordering for the nesting test.
+var order []string
+
+func TestInstallNested(t *testing.T) {
+	t.Run("child_completes_before_parent_continues", func(t *testing.T) {
 		type cfg struct {
-			Mod    *staticModule
-			Result string `inject:"provided"`
+			Bundle string `inject:"bundle"`
 		}
 		s := New()
-		s.Bind(&staticModule{})
+		s.Register(&bundleModule{})
 		in := &cfg{}
-		want := &cfg{
-			Mod:    &staticModule{},
-			Result: "installed-value",
-		}
+		want := &cfg{Bundle: "child+bundle"}
 		testingx.Call(t, Assign, s, in).NoError()
 		testingx.Capture(t, in).Equal(want)
 	})
+
+	t.Run("sibling_sees_the_childs_binding", func(t *testing.T) {
+		type cfg struct {
+			Sibling string `inject:"sibling"`
+		}
+		s := New()
+		s.Register(&bundleModule{}, &siblingModule{})
+		in := &cfg{}
+		want := &cfg{Sibling: "child+sibling"}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("two_levels", func(t *testing.T) {
+		order = nil
+		s := New()
+		s.Register(&outerModule{})
+		testingx.Call(t, Assign, s, &struct{}{}).NoError()
+		testingx.Capture(t, order).Equal([]string{"outer-start", "outer-end"})
+		// The bundle two levels down completed inside outer.
+		testingx.Call(t, GetTag[string], s, "bundle").NoError()
+	})
+}
+
+// Cyclic module types.
+
+type cycleA struct{}
+
+func (m *cycleA) Install(s *Source) error { return s.Install(&cycleB{}) }
+
+type cycleB struct{}
+
+func (m *cycleB) Install(s *Source) error { return s.Install(&cycleA{}) }
+
+type selfCycle struct{}
+
+func (m *selfCycle) Install(s *Source) error { return s.Install(&selfCycle{}) }
+
+func TestInstallCycle(t *testing.T) {
+	t.Run("mutual", func(t *testing.T) {
+		s := New()
+		s.Register(&cycleA{})
+		err := Assign(s, &struct{}{})
+		testingx.Capture(t, err).ErrorCode(ModuleCycle)
+		testingx.Capture(t, err).ErrorContains("*inject.cycleA -> *inject.cycleB -> *inject.cycleA")
+	})
+
+	t.Run("self", func(t *testing.T) {
+		s := New()
+		s.Register(&selfCycle{})
+		testingx.Call(t, Assign, s, &struct{}{}).ErrorCode(ModuleCycle)
+	})
+}
+
+func TestGet(t *testing.T) {
+	t.Run("by_type", func(t *testing.T) {
+		s := New()
+		s.Bind(42)
+		testingx.Call(t, Get[int], s).NoError().Equal(42)
+	})
+
+	t.Run("by_tag", func(t *testing.T) {
+		s := New()
+		s.Bind("value", "my-tag")
+		testingx.Call(t, GetTag[string], s, "my-tag").NoError().Equal("value")
+	})
+
+	t.Run("bound_value_get_pointer", func(t *testing.T) {
+		s := New()
+		s.Bind(42)
+		want := 42
+		testingx.Call(t, Get[*int], s).NoError().Equal(&want)
+	})
+
+	t.Run("bound_pointer_get_value", func(t *testing.T) {
+		s := New()
+		v := 42
+		s.Bind(&v)
+		testingx.Call(t, Get[int], s).NoError().Equal(42)
+	})
+
+	t.Run("interface_target", func(t *testing.T) {
+		s := New()
+		s.Bind(testStringer("hello"))
+		testingx.Call(t, Get[fmt.Stringer], s).NoError().Equal(testStringer("hello"))
+	})
+
+	t.Run("factory_receives_zero_value", func(t *testing.T) {
+		s := New()
+		s.BindFunc(func(current string) string { return current + "-appended" }, "val")
+		testingx.Call(t, GetTag[string], s, "val").NoError().Equal("-appended")
+	})
+
+	t.Run("factory_error", func(t *testing.T) {
+		s := New()
+		s.BindFunc(func(current string) (string, error) {
+			return "", fmt.Errorf("factory failed")
+		}, "val")
+		testingx.Call(t, GetTag[string], s, "val").Error()
+	})
+
+	t.Run("not_bound_by_type", func(t *testing.T) {
+		testingx.Call(t, Get[int], New()).ErrorCode(NotBound)
+	})
+
+	t.Run("not_bound_by_tag", func(t *testing.T) {
+		testingx.Call(t, GetTag[string], New(), "missing").ErrorCode(NotBound)
+	})
+
+	t.Run("type_mismatch", func(t *testing.T) {
+		s := New()
+		s.Bind(42, "val")
+		testingx.Call(t, GetTag[string], s, "val").ErrorCode(TypeMismatch)
+	})
+}
+
+func TestFindDoesNotInstall(t *testing.T) {
+	type cfg struct {
+		Result string `inject:"provided"`
+	}
+	s := New()
+	s.Register(&staticModule{})
+
+	// Find must not run modules, so the binding is not reported...
+	testingx.Call(t, Find, s, &cfg{}).Equal(map[string]Match{})
+
+	// ...and the module is still queued for a later Assign.
+	in := &cfg{}
+	testingx.Call(t, Assign, s, in).NoError()
+	testingx.Capture(t, in).Equal(&cfg{Result: "installed-value"})
 }
 
 func TestBindFunc(t *testing.T) {
