@@ -229,11 +229,32 @@ func (s *Source) Assign(cfg *config.Config, path reflectx.Path, value reflect.Va
 // inside this one published - so a module sees what its children bound.
 func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value reflect.Value) error {
 	mod, ok := asModule(value)
-	if !ok {
+	if !ok || isNilModule(mod) {
+		// Walk leaves a pointer nil where it declines to recurse, which is
+		// precisely the self-referential case its seen map guards, and a nil
+		// interface field that no binding claimed holds nothing to install.
 		return nil
 	}
-	if err := cfg.Assign(mod); err != nil {
+	if err := s.install(cfg, mod); err != nil {
 		return errorsx.Annotate(err, "path", path)
+	}
+	return nil
+}
+
+// install validates a module instance, populates its own fields from every
+// source in the Config, and calls Install so it can register new bindings.
+func (s *Source) install(cfg *config.Config, mod Module) error {
+	// reflectx.Walk panics on anything that is not a non-nil pointer to a
+	// struct, so reject those here, where the module can be named. This is a
+	// panic rather than an error because nothing a user does can cause it: a
+	// module with no address behind it is a binding wired to the wrong sort of
+	// field, and it fails the same way every run.
+	if v := reflect.ValueOf(mod); v.Kind() != reflect.Pointer || v.IsNil() || v.Elem().Kind() != reflect.Struct {
+		panic(errorsx.Newf(InvalidModule, nil, "module %s must be a non-nil pointer to a struct", reflect.TypeOf(mod)))
+	}
+
+	if err := cfg.Assign(mod); err != nil {
+		return err
 	}
 
 	// A nil parent means this Source is not being walked by a Config at all, so
@@ -242,24 +263,45 @@ func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value ref
 	if enclosing == nil {
 		enclosing = s
 	}
-	if err := mod.Install(enclosing); err != nil {
-		return errorsx.Annotate(err, "path", path)
-	}
-	return nil
+	return mod.Install(enclosing)
 }
 
-// asModule extracts a Module from a reflect.Value, checking both the value
-// itself and its address.
+// asModule extracts a Module from a reflect.Value, checking the value's address
+// first, then the value itself, then what an interface holds.
+//
+// The address comes first because a struct field is addressable inside its
+// parent and a pointer's method set includes the value receivers, so the
+// address is always at least as good a module as the value - and unlike the
+// value it is something the walk can populate. Taking it is what lets a module
+// whose Install has a value receiver be built and filled in rather than
+// rejected for not being a pointer.
 func asModule(value reflect.Value) (Module, bool) {
+	if value.Kind() == reflect.Struct && value.CanAddr() {
+		if mod, ok := value.Addr().Interface().(Module); ok {
+			return mod, true
+		}
+	}
 	if value.Type().Implements(moduleType) {
 		mod, ok := value.Interface().(Module)
 		return mod, ok
+	}
+	if value.Kind() == reflect.Interface && !value.IsNil() {
+		if mod, ok := value.Elem().Interface().(Module); ok {
+			return mod, true
+		}
 	}
 	if value.CanAddr() && value.Addr().Type().Implements(moduleType) {
 		mod, ok := value.Addr().Interface().(Module)
 		return mod, ok
 	}
 	return nil, false
+}
+
+// isNilModule reports whether mod is a typed nil pointer, which has a Module
+// method set but no struct behind it.
+func isNilModule(mod Module) bool {
+	v := reflect.ValueOf(mod)
+	return !v.IsValid() || (v.Kind() == reflect.Pointer && v.IsNil())
 }
 
 // lookupByTag finds a resolver for the given tag, innermost frame first, so a

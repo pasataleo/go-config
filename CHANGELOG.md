@@ -13,6 +13,10 @@
 - `config.Assign(source, v)` is now `config.New(source).Assign(v)` rather than a second hand-rolled walk, so there is one place that knows how a walk is driven
 - `inject.New` no longer allocates its maps up front; a scope that binds nothing costs a single small struct
 - A failed assignment reports the type it could not assign and the path it was assigning to, as a `TypeMismatch` rather than a bare string
+- A module is taken through its field's address wherever there is one, so a module whose `Install` has a value receiver is built and populated rather than rejected for not being a pointer
+- An interface-typed field installs whatever module a binding put in it. `reflectx.Walk` does not recurse into interfaces, so this is the only way such a field can work
+- A nil module field installs nothing instead of panicking
+- A module with no address behind it - a value a binding put in an interface field, which cannot be populated - panics with an `InvalidModule` code rather than failing somewhere deeper in the walk. Wiring the injector up wrongly panics, as a duplicate binding already did; errors are for values a user supplied
 
 <!--
 ## BUG FIXES

@@ -268,6 +268,67 @@ func TestAssignModule(t *testing.T) {
 	})
 }
 
+// valueModule's Install has a value receiver, so the module is only usable
+// through the field's address.
+type valueModule struct {
+	Name string `inject:"name"`
+}
+
+func (m valueModule) Install(s *Source) error {
+	s.Bind("hello "+m.Name, "value-result")
+	return nil
+}
+
+func TestInstallModuleValidation(t *testing.T) {
+	t.Run("a_value_receiver_module_is_populated_through_the_fields_address", func(t *testing.T) {
+		type cfg struct {
+			Mod    valueModule `inject:"mod"`
+			Result string      `inject:"value-result"`
+		}
+		s := New()
+		s.Bind("world", "name")
+		s.Bind(valueModule{}, "mod")
+		in := &cfg{}
+		want := &cfg{Mod: valueModule{Name: "world"}, Result: "hello world"}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("a_value_module_with_no_address_panics", func(t *testing.T) {
+		type cfg struct {
+			Mod interface{} `inject:"mod"`
+		}
+		s := New()
+		s.Bind(valueModule{}, "mod")
+		testingx.Panics(t, nil, Assign, s, &cfg{}).ErrorCode(InvalidModule)
+	})
+
+	t.Run("an_interface_field_installs_what_the_binding_put_in_it", func(t *testing.T) {
+		type cfg struct {
+			Mod    interface{} `inject:"mod"`
+			Result string      `inject:"provided"`
+		}
+		s := New()
+		s.Bind(&staticModule{}, "mod")
+		in := &cfg{}
+		want := &cfg{Mod: &staticModule{}, Result: "installed-value"}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("a_nil_module_field_installs_nothing", func(t *testing.T) {
+		type cfg struct {
+			Mod    Module `inject:"mod;optional"`
+			Result string `inject:"provided;optional"`
+		}
+		s := New()
+		in := &cfg{}
+		want := &cfg{Mod: nil, Result: ""}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+}
+
 func TestScopes(t *testing.T) {
 	t.Run("sibling_sees_an_earlier_siblings_binding", func(t *testing.T) {
 		type cfg struct {
