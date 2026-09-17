@@ -169,7 +169,7 @@ func (s *Source) Find(_ *config.Config, path reflectx.Path, value reflect.Value,
 			return nil, nil
 		}
 		if !canAssign(r.outType, field.Type) {
-			return Match{Tag: tag}, errorsx.Annotate(errorsx.Newf(errorsx.Unknown, nil, "type %s is not assignable to %s", r.outType, field.Type), "path", path)
+			return Match{Tag: tag}, errorsx.Annotate(errorsx.Newf(TypeMismatch, nil, "type %s is not assignable to %s", r.outType, field.Type), "path", path)
 		}
 		return Match{Tag: tag}, nil
 	}
@@ -331,13 +331,23 @@ func canAssign(src, dst reflect.Type) bool {
 	return false
 }
 
+// set assigns value to target, panicking on failure. Assignment failures are
+// programmer errors: the field and the binding are both fixed at compile time.
 func set(path reflectx.Path, target reflect.Value, value interface{}) {
+	if err := convert(target, value); err != nil {
+		panic(errorsx.Annotate(err, "path", path))
+	}
+}
+
+// convert assigns value to target, wrapping or dereferencing a pointer where
+// that is the only difference between the two types.
+func convert(target reflect.Value, value interface{}) error {
 	rv := reflect.ValueOf(value)
 
 	// Direct assignment.
 	if rv.Type().AssignableTo(target.Type()) {
 		target.Set(rv)
-		return
+		return nil
 	}
 
 	// Value is non-pointer, target is pointer: wrap in pointer.
@@ -345,19 +355,19 @@ func set(path reflectx.Path, target reflect.Value, value interface{}) {
 		ptr := reflect.New(rv.Type())
 		ptr.Elem().Set(rv)
 		target.Set(ptr)
-		return
+		return nil
 	}
 
 	// Value is pointer, target is non-pointer: dereference.
 	if rv.Type().Kind() == reflect.Pointer && rv.Type().Elem() == target.Type() {
 		if rv.IsNil() {
-			panic(fmt.Errorf("inject: cannot assign to nil pointer at %s", path))
+			return errorsx.New(TypeMismatch, nil, "cannot assign nil pointer to "+target.Type().String())
 		}
 		target.Set(rv.Elem())
-		return
+		return nil
 	}
 
-	panic(fmt.Errorf("type %s is not assignable to %s at %s", rv.Type(), target.Type(), path))
+	return errorsx.Newf(TypeMismatch, nil, "type %s is not assignable to %s", rv.Type(), target.Type())
 }
 
 // Find returns a map from field path to the Match that describes how the field
