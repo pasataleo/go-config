@@ -329,6 +329,88 @@ func TestInstallModuleValidation(t *testing.T) {
 	})
 }
 
+// selfModule requires itself, so installing it reaches itself.
+type selfModule struct {
+	Self *selfModule `inject:"self"`
+}
+
+func (m *selfModule) Install(s *Source) error { return nil }
+
+// pingModule and pongModule require each other, so neither reaches itself until
+// the second hop.
+type pingModule struct {
+	Pong *pongModule `inject:"pong"`
+}
+
+func (m *pingModule) Install(s *Source) error { return nil }
+
+type pongModule struct {
+	Ping *pingModule `inject:"ping"`
+}
+
+func (m *pongModule) Install(s *Source) error { return nil }
+
+// countingModule records how many times it was installed.
+type countingModule struct {
+	Name     string `inject:"counted-name"`
+	installs int
+}
+
+func (m *countingModule) Install(s *Source) error {
+	m.installs++
+	return nil
+}
+
+func TestInstallCycles(t *testing.T) {
+	t.Run("a_module_that_requires_itself_is_a_cycle", func(t *testing.T) {
+		type cfg struct {
+			Mod *selfModule `inject:"self"`
+		}
+		s := New()
+		s.Bind(&selfModule{}, "self")
+		testingx.Panics(t, nil, Assign, s, &cfg{}).ErrorCode(ModuleCycle)
+	})
+
+	t.Run("two_modules_that_require_each_other_are_a_cycle", func(t *testing.T) {
+		type cfg struct {
+			Mod *pingModule `inject:"ping"`
+		}
+		s := New()
+		s.Bind(&pingModule{}, "ping")
+		s.Bind(&pongModule{}, "pong")
+		testingx.Panics(t, nil, Assign, s, &cfg{}).ErrorCode(ModuleCycle)
+	})
+
+	t.Run("one_instance_reached_twice_installs_once", func(t *testing.T) {
+		type cfg struct {
+			First  *countingModule `inject:"first"`
+			Second *countingModule `inject:"second"`
+		}
+		mod := &countingModule{}
+		s := New()
+		s.Bind("counted", "counted-name")
+		s.Bind(mod, "first")
+		s.Bind(mod, "second")
+
+		testingx.Call(t, Assign, s, &cfg{}).NoError()
+		testingx.Capture(t, mod.installs).Equal(1)
+	})
+
+	t.Run("a_second_assign_installs_again", func(t *testing.T) {
+		type cfg struct {
+			Mod *countingModule `inject:"mod"`
+		}
+		mod := &countingModule{}
+		s := New()
+		s.Bind("counted", "counted-name")
+		s.Bind(mod, "mod")
+
+		testingx.Call(t, Assign, s, &cfg{}).NoError()
+		testingx.Call(t, Assign, s, &cfg{}).NoError()
+		testingx.Capture(t, mod.installs).Equal(2)
+	})
+}
+
 func TestScopes(t *testing.T) {
 	t.Run("sibling_sees_an_earlier_siblings_binding", func(t *testing.T) {
 		type cfg struct {

@@ -5,6 +5,8 @@
 - `config.DynamicSource`: an extension to `Source` for sources whose bindings change as the walk progresses. `Enter` is called on the way down, before a field's children are walked, and returns the `Source` to stand in for the receiver over that field, its children, and their own `Enter`. The field's siblings see what their shared parent returned
 - `inject` bindings are lexically scoped. `Assign` opens a scope for every field it walks, and what a module installs lands in the scope of the struct that contains it: visible to that module's siblings and everything nested under them, invisible outside, and shadowing a binding of the same name from further out until the walk leaves
 - `inject` error codes: `NotBound`, `TypeMismatch`, `ModuleCycle` and `InvalidModule`, so a caller can tell why a lookup or an install failed without matching on the message
+- A module reached from its own subtree panics with a `ModuleCycle` code naming the field it was found at. It used to recurse until it ran out of memory, since populating a module's fields walks it afresh and nothing was watching for a module it had already started
+- A module instance reached twice in one `Assign` - by two fields bound to it, say - installs once. The record is per walk, so a later `Assign` installs it again
 
 ## IMPROVEMENTS
 
@@ -13,6 +15,8 @@
 - `config.Assign(source, v)` is now `config.New(source).Assign(v)` rather than a second hand-rolled walk, so there is one place that knows how a walk is driven
 - `inject.New` no longer allocates its maps up front; a scope that binds nothing costs a single small struct
 - A failed assignment reports the type it could not assign and the path it was assigning to, as a `TypeMismatch` rather than a bare string
+- A panic raised while a module is installing - a duplicate binding in its `Install`, say - names the module and where it was found, rather than only what collided
+- A zero-sized module is exempt from install dedupe. Go may put every zero-size allocation at the same address, so two distinct empty modules are indistinguishable; installing both means a genuine double registration still collides loudly instead of being silently dropped
 - A module is taken through its field's address wherever there is one, so a module whose `Install` has a value receiver is built and populated rather than rejected for not being a pointer
 - An interface-typed field installs whatever module a binding put in it. `reflectx.Walk` does not recurse into interfaces, so this is the only way such a field can work
 - A nil module field installs nothing instead of panicking

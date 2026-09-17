@@ -3,6 +3,7 @@ package inject
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/pasataleo/go-config/pkg/config"
@@ -68,6 +69,38 @@ type Source struct {
 	// most of them, one per field walked - costs a single small struct.
 	byTag  map[string]resolver
 	byType map[reflect.Type]resolver
+
+	// walk is the install state of the Assign this frame belongs to, shared with
+	// every frame below it. Nil on the Source the caller built, which belongs to
+	// no walk.
+	walk *walk
+}
+
+// walk is what one Assign has to remember across the frames it opens: which
+// module instances it has installed, and which are installing right now. It is
+// deliberately not on the Source the caller built - it is created by the frame
+// at the root of a walk and dies with it, so a second Assign installs from
+// clean and nothing an Assign does outlives it.
+type walk struct {
+	// stack is the types of the modules currently being installed, innermost
+	// last. A module whose type is already on it is installing itself. It is
+	// the type rather than the path that detects this: populating a module's
+	// fields walks that module from a root of its own, so the path is the
+	// field's, not a trail back to the struct the caller passed in.
+	stack []reflect.Type
+
+	// path is where the innermost installing module was found, for the messages
+	// of anything that goes wrong underneath it.
+	path reflectx.Path
+
+	// installed dedupes by instance identity, so an instance reached twice - by
+	// two fields bound to it, say - is installed once. Dedupe is about side
+	// effects rather than visibility, so it is flat for the whole walk rather
+	// than per frame, and a module reached from two different scopes still
+	// installs only once.
+	//
+	// Zero-sized modules are left out of it entirely; see install.
+	installed map[Module]bool
 }
 
 func New() *Source {
@@ -77,7 +110,16 @@ func New() *Source {
 // Enter opens a frame for one field. Everything the field's own Assign and its
 // children bind lands here, and stops being reachable when the walk leaves.
 func (s *Source) Enter(_ *config.Config, _ reflectx.Path) (config.Source, error) {
-	return &Source{parent: s}, nil
+	w := s.walk
+	if w == nil {
+		// s belongs to no walk, so it is the Source the caller built and this is
+		// the frame at the root of one. A walk nested inside another - a module's
+		// own fields being populated - enters from a frame that already has the
+		// state and shares it, which is what lets a cycle through two nested
+		// walks still be seen as one chain.
+		w = &walk{}
+	}
+	return &Source{parent: s, walk: w}, nil
 }
 
 // Bind registers a static value for injection. If no tags are specified, the
@@ -138,7 +180,7 @@ func (s *Source) BindFunc(fn interface{}, tags ...string) {
 func (s *Source) bind(r resolver, tags ...string) {
 	if len(tags) == 0 {
 		if _, exists := s.byType[r.outType]; exists {
-			panic("duplicate binding for type: " + r.outType.String())
+			panic("duplicate binding for type: " + r.outType.String() + s.while())
 		}
 		if s.byType == nil {
 			s.byType = make(map[reflect.Type]resolver)
@@ -149,7 +191,7 @@ func (s *Source) bind(r resolver, tags ...string) {
 
 	for _, tag := range tags {
 		if _, exists := s.byTag[tag]; exists {
-			panic("duplicate binding for tag: " + tag)
+			panic("duplicate binding for tag: " + tag + s.while())
 		}
 		if s.byTag == nil {
 			s.byTag = make(map[string]resolver)
@@ -189,7 +231,7 @@ func (s *Source) Assign(cfg *config.Config, path reflectx.Path, value reflect.Va
 			if optional {
 				return false, nil
 			}
-			panic(fmt.Errorf("required value not found for tag at %s: %s", path, tag))
+			panic(fmt.Errorf("required value not found for tag at %s: %s%s", path, tag, s.while()))
 		}
 		v, err := r.resolve(value)
 		if err != nil {
@@ -235,7 +277,7 @@ func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value ref
 		// interface field that no binding claimed holds nothing to install.
 		return nil
 	}
-	if err := s.install(cfg, mod); err != nil {
+	if err := s.install(cfg, path, mod); err != nil {
 		return errorsx.Annotate(err, "path", path)
 	}
 	return nil
@@ -243,7 +285,10 @@ func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value ref
 
 // install validates a module instance, populates its own fields from every
 // source in the Config, and calls Install so it can register new bindings.
-func (s *Source) install(cfg *config.Config, mod Module) error {
+//
+// An instance this walk has installed already is skipped, and a module reached
+// from its own subtree is a cycle.
+func (s *Source) install(cfg *config.Config, path reflectx.Path, mod Module) error {
 	// reflectx.Walk panics on anything that is not a non-nil pointer to a
 	// struct, so reject those here, where the module can be named. This is a
 	// panic rather than an error because nothing a user does can cause it: a
@@ -253,8 +298,45 @@ func (s *Source) install(cfg *config.Config, mod Module) error {
 		panic(errorsx.Newf(InvalidModule, nil, "module %s must be a non-nil pointer to a struct", reflect.TypeOf(mod)))
 	}
 
+	w := s.walk
+	if w == nil {
+		// Nothing opened a walk, so this Source is being driven by hand rather
+		// than by a Config: one install, with state of its own and nothing to
+		// share it with.
+		w = &walk{}
+	}
+
+	t := reflect.TypeOf(mod)
+
+	// A zero-sized module has no identity to dedupe on: Go may put every
+	// zero-size allocation at the same address, so two distinct instances of an
+	// empty module are indistinguishable here. Install those every time and let
+	// a genuine double registration collide loudly on its own bindings, rather
+	// than silently dropping the second and calling it dedupe.
+	dedupe := t.Elem().Size() > 0
+	if dedupe && w.installed[mod] {
+		return nil
+	}
+	if slices.Contains(w.stack, t) {
+		// A module reached from its own subtree would recurse until the stack
+		// ran out. It is a wiring mistake and never depends on the input, so it
+		// panics rather than returning.
+		panic(errorsx.Annotate(errorsx.Newf(ModuleCycle, nil, "module %s installs itself", t), "path", path))
+	}
+
+	// Push before the fields are populated, not just before Install: a BindFunc
+	// factory can run while they are being assigned and re-enter through a
+	// module field of its own.
+	w.stack = append(w.stack, t)
+	outer := w.path
+	w.path = path
+	defer func() {
+		w.stack = w.stack[:len(w.stack)-1]
+		w.path = outer
+	}()
+
 	if err := cfg.Assign(mod); err != nil {
-		return err
+		return errorsx.Wrapf(err, "failed to configure module %s", t)
 	}
 
 	// A nil parent means this Source is not being walked by a Config at all, so
@@ -263,7 +345,27 @@ func (s *Source) install(cfg *config.Config, mod Module) error {
 	if enclosing == nil {
 		enclosing = s
 	}
-	return mod.Install(enclosing)
+	if err := mod.Install(enclosing); err != nil {
+		return errorsx.Wrapf(err, "failed to install module %s", t)
+	}
+
+	if dedupe {
+		if w.installed == nil {
+			w.installed = make(map[Module]bool)
+		}
+		w.installed[mod] = true
+	}
+	return nil
+}
+
+// while describes where the module currently installing was found, for
+// appending to panic messages raised underneath it - a duplicate binding in an
+// Install, say, which otherwise says what collided but not who did it.
+func (s *Source) while() string {
+	if s.walk == nil || len(s.walk.stack) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (while installing %s at %s)", s.walk.stack[len(s.walk.stack)-1], s.walk.path)
 }
 
 // asModule extracts a Module from a reflect.Value, checking the value's address
