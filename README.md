@@ -47,6 +47,8 @@ Core package. Defines the `Source` interface and the `Config` type that composes
 - `config.Assign(source, v)` — populate fields from a single source
 - `config.FilterBySource[T](found, name)` — filter `Find` results by source name
 
+A source that also implements `config.DynamicSource` is given an `Enter` on the way down, before a field's children are walked, and returns the `Source` to stand in for itself over that field and everything below it. That is how `inject` scopes bindings to the struct they were installed in. `Find` never calls `Enter`, so it stays read-only.
+
 ### `flags`
 
 Parses CLI flags and populates fields via the `flag` struct tag.
@@ -101,7 +103,28 @@ When `inject.Source.Assign` assigns a value to a field and the concrete value im
 2. Calls `module.Install(s)` so the module can register new bindings.
 3. Returns — subsequent fields in the struct tree can use the new bindings.
 
-Struct field order is dependency order — earlier modules' bindings are available to later modules and fields.
+Struct field order is dependency order within a scope — earlier modules' bindings are available to later modules and fields at the same level.
+
+#### Binding scopes
+
+Bindings are lexically scoped. `Assign` opens a scope for every field it walks, and what a module installs lands in the scope of the struct that *contains* it:
+
+- It is visible to the module's siblings in that struct, and to everything nested under them.
+- It is **not** visible outside that struct.
+- It **shadows** a binding of the same name from further out, and the outer binding is back in force once the walk leaves.
+- Two bindings of the same name in the *same* scope are still a collision, and still panic.
+
+```go
+type App struct {
+    Plain struct {
+        Mod  DBModule // binds "conn"
+        Peer string   `inject:"conn"` // resolved: a sibling of Mod
+    }
+    Conn string `inject:"conn"` // NOT resolved: "conn" died with Plain's scope
+}
+```
+
+Plain structs are not transparent — every struct is a scope, so a module that needs to publish to the level above has to live at that level. The same rule is what keeps a walk from leaving anything behind: nothing a module installs survives the `Assign` that installed it, so the same injector can be reused and a second `Assign` starts clean.
 
 #### Example
 

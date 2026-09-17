@@ -271,6 +271,31 @@ func TestConfigAssignModules(t *testing.T) {
 		testingx.Capture(t, in).Equal(want)
 	})
 
+	t.Run("module_in_nested_struct_is_scoped_to_it", func(t *testing.T) {
+		type database struct {
+			DB       *dbModuleWrapper `inject:"database"`
+			ConnInfo string           `inject:"conn"`
+		}
+		type cfg struct {
+			Database database
+			ConnInfo string `inject:"conn;optional"`
+		}
+
+		injector := inject.New()
+		injector.Bind(&dbModuleWrapper{}, "database")
+		in := &cfg{}
+		want := &cfg{
+			Database: database{
+				DB:       &dbModuleWrapper{Host: "localhost", Port: 5432},
+				ConnInfo: "localhost:5432",
+			},
+			ConnInfo: "", // conn died with Database's scope
+		}
+		c := config.New(injector, new(defaults.Source))
+		testingx.Call(t, c.Assign, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
 	t.Run("module_with_env", func(t *testing.T) {
 		type cfg struct {
 			Mod      envModuleWrapper `inject:"env-mod"`

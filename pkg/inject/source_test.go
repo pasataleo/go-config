@@ -181,6 +181,27 @@ func (m *chainingModule) Install(s *Source) error {
 	return nil
 }
 
+// shadowModule binds a tag the Source itself already binds, to check that the
+// module's value wins inside its scope and the Source's is back afterwards.
+type shadowModule struct{}
+
+func (m *shadowModule) Install(s *Source) error {
+	s.Bind("red", "colour")
+	return nil
+}
+
+// outerModule holds a module of its own, and reads what that one bound before
+// binding something itself.
+type outerModule struct {
+	Inner *staticModule `inject:"inner-mod"`
+	Got   string        `inject:"provided"`
+}
+
+func (m *outerModule) Install(s *Source) error {
+	s.Bind("outer:"+m.Got, "outer-result")
+	return nil
+}
+
 func TestAssignModule(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		type cfg struct {
@@ -244,6 +265,137 @@ func TestAssignModule(t *testing.T) {
 		}
 		testingx.Call(t, Assign, s, in).NoError()
 		testingx.Capture(t, in).Equal(want)
+	})
+}
+
+func TestScopes(t *testing.T) {
+	t.Run("sibling_sees_an_earlier_siblings_binding", func(t *testing.T) {
+		type cfg struct {
+			Mod  *staticModule `inject:"mod"`
+			Peer string        `inject:"provided"`
+		}
+		s := New()
+		s.Bind(&staticModule{}, "mod")
+		in := &cfg{}
+		want := &cfg{Mod: &staticModule{}, Peer: "installed-value"}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("a_nested_scope_is_not_visible_above_it", func(t *testing.T) {
+		type inner struct {
+			Mod  *staticModule `inject:"mod"`
+			Peer string        `inject:"provided"`
+		}
+		type cfg struct {
+			Inner inner
+			Above string `inject:"provided;optional"`
+		}
+		s := New()
+		s.Bind(&staticModule{}, "mod")
+		in := &cfg{}
+		want := &cfg{
+			Inner: inner{Mod: &staticModule{}, Peer: "installed-value"},
+			Above: "", // died with inner's scope
+		}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("a_nested_scope_shadows_an_outer_binding", func(t *testing.T) {
+		type inner struct {
+			Mod   *shadowModule `inject:"shadow-mod"`
+			Value string        `inject:"colour"`
+		}
+		type cfg struct {
+			Before string `inject:"colour"`
+			Inner  inner
+			After  string `inject:"colour"`
+		}
+		s := New()
+		s.Bind("blue", "colour")
+		s.Bind(&shadowModule{}, "shadow-mod")
+		in := &cfg{}
+		want := &cfg{
+			Before: "blue",
+			Inner:  inner{Mod: &shadowModule{}, Value: "red"},
+			After:  "blue", // the outer binding is back in force
+		}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("a_module_sees_what_its_own_module_bound", func(t *testing.T) {
+		type cfg struct {
+			Mod    *outerModule `inject:"outer-mod"`
+			Result string       `inject:"outer-result"`
+		}
+		s := New()
+		s.Bind(&outerModule{}, "outer-mod")
+		s.Bind(&staticModule{}, "inner-mod")
+		in := &cfg{}
+		want := &cfg{
+			Mod:    &outerModule{Inner: &staticModule{}, Got: "installed-value"},
+			Result: "outer:installed-value",
+		}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("two_modules_in_the_same_scope_collide", func(t *testing.T) {
+		type cfg struct {
+			First  *staticModule `inject:"first"`
+			Second *staticModule `inject:"second"`
+		}
+		s := New()
+		s.Bind(&staticModule{}, "first")
+		s.Bind(&staticModule{}, "second")
+
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected a panic from the duplicate binding")
+			}
+		}()
+		_ = Assign(s, &cfg{})
+	})
+
+	t.Run("bindings_do_not_survive_the_assign_that_made_them", func(t *testing.T) {
+		type first struct {
+			Mod    *staticModule `inject:"mod"`
+			Result string        `inject:"provided"`
+		}
+		type second struct {
+			Result string `inject:"provided;optional"`
+		}
+		s := New()
+		s.Bind(&staticModule{}, "mod")
+
+		one := &first{}
+		testingx.Call(t, Assign, s, one).NoError()
+		testingx.Capture(t, one).Equal(&first{Mod: &staticModule{}, Result: "installed-value"})
+
+		two := &second{}
+		testingx.Call(t, Assign, s, two).NoError()
+		testingx.Capture(t, two).Equal(&second{Result: ""})
+	})
+
+	t.Run("a_failed_assign_leaves_no_debris", func(t *testing.T) {
+		type broken struct {
+			Bad *errorModule  `inject:"bad"`
+			Mod *staticModule `inject:"mod"`
+		}
+		type after struct {
+			Result string `inject:"provided;optional"`
+		}
+		s := New()
+		s.Bind(&errorModule{}, "bad")
+		s.Bind(&staticModule{}, "mod")
+
+		testingx.Call(t, Assign, s, &broken{}).Error()
+
+		next := &after{}
+		testingx.Call(t, Assign, s, next).NoError()
+		testingx.Capture(t, next).Equal(&after{Result: ""})
 	})
 }
 
