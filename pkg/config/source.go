@@ -60,6 +60,19 @@ type Starter interface {
 	Start(cfg *Config) error
 }
 
+// AdditionalTargets is an optional interface for Sources that bring structs of
+// their own to be populated, beyond the one a caller passes to Assign. A module
+// registered on an inject Source is such a struct: it holds flags and
+// environment variables like any other, but nothing the caller owns points at
+// it, so without this there is no way to ask what fields it has.
+//
+// Find does not walk them. It reports the one struct it is given, and a caller
+// that wants the program's whole field surface - for help text, say - calls
+// Find on each additional target as well and merges the results.
+type AdditionalTargets interface {
+	AdditionalTargets() []interface{}
+}
+
 // Config holds an ordered list of sources for populating struct fields.
 // Sources are consulted in order, with earlier sources taking priority.
 type Config struct {
@@ -167,6 +180,22 @@ func (config *Config) Assign(v interface{}) error {
 		},
 	}
 	return walker.Walk(v, root)
+}
+
+// AdditionalTargets returns every struct the sources bring along themselves, in
+// source order. Each is a non-nil pointer to a struct, ready to pass to Find or
+// Assign.
+//
+// The answer does not depend on a walk having run, so help text does not have
+// to assign anything to be complete.
+func (config *Config) AdditionalTargets() []interface{} {
+	var targets []interface{}
+	for _, source := range config.sources {
+		if source, ok := source.(AdditionalTargets); ok {
+			targets = append(targets, source.AdditionalTargets()...)
+		}
+	}
+	return targets
 }
 
 // start gives every Starter its chance to act before the walk visits anything.

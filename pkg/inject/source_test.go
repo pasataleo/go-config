@@ -669,6 +669,53 @@ func (m *registeringModule) Install(s *Source) error {
 	return nil
 }
 
+func TestAdditionalTargets(t *testing.T) {
+	t.Run("nothing_registered", func(t *testing.T) {
+		testingx.Capture(t, config.New(New()).AdditionalTargets()).Equal([]interface{}(nil))
+	})
+
+	t.Run("registered_modules_are_reported_in_order", func(t *testing.T) {
+		prod, test := &prodModule{}, &testModule{}
+		s := New()
+		s.Register(prod, test)
+		testingx.Capture(t, config.New(s).AdditionalTargets()).
+			Equal([]interface{}{prod, test})
+	})
+
+	t.Run("reported_before_any_assign_has_run", func(t *testing.T) {
+		mod := &countingModule{}
+		s := New()
+		s.Register(mod)
+
+		targets := config.New(s).AdditionalTargets()
+		testingx.Capture(t, len(targets)).Equal(1)
+		testingx.Capture(t, targets[0] == Module(mod)).True()
+		testingx.Capture(t, mod.installs).Equal(0)
+	})
+
+	t.Run("a_nil_module_is_skipped", func(t *testing.T) {
+		s := New()
+		s.Register((*prodModule)(nil))
+		testingx.Capture(t, config.New(s).AdditionalTargets()).Equal([]interface{}(nil))
+	})
+
+	t.Run("a_targets_own_fields_can_be_found", func(t *testing.T) {
+		s := New()
+		s.Bind("counted", "counted-name")
+		s.Register(&countingModule{})
+
+		// The module is wired to the injector, so nothing the caller owns points
+		// at it - this is the only way to report the fields it contributes.
+		found := map[string]Match{}
+		for _, target := range config.New(s).AdditionalTargets() {
+			for path, match := range Find(s, target) {
+				found[path] = match
+			}
+		}
+		testingx.Capture(t, found).Equal(map[string]Match{"Name": {Tag: "counted-name"}})
+	})
+}
+
 func TestInstallCycles(t *testing.T) {
 	t.Run("a_module_that_requires_itself_is_a_cycle", func(t *testing.T) {
 		type cfg struct {

@@ -25,9 +25,10 @@ type Module interface {
 }
 
 var (
-	_ config.Source        = (*Source)(nil)
-	_ config.DynamicSource = (*Source)(nil)
-	_ config.Starter       = (*Source)(nil)
+	_ config.Source            = (*Source)(nil)
+	_ config.DynamicSource     = (*Source)(nil)
+	_ config.Starter           = (*Source)(nil)
+	_ config.AdditionalTargets = (*Source)(nil)
 
 	errorType  = reflect.TypeOf((*error)(nil)).Elem()
 	moduleType = reflect.TypeOf((*Module)(nil)).Elem()
@@ -174,6 +175,25 @@ func (s *Source) Start(cfg *config.Config) error {
 		}
 	}
 	return nil
+}
+
+// AdditionalTargets implements config.AdditionalTargets. It returns every
+// registered module, so a caller can Find the fields of modules its own struct
+// does not reach - which is all of them, since a registered module is wired to
+// the injector rather than declared anywhere the caller owns.
+//
+// The answer is the same whether or not an Assign has installed them, which is
+// the point: help text does not wait on a walk.
+func (s *Source) AdditionalTargets() []interface{} {
+	modules := s.root().modules
+	targets := make([]interface{}, 0, len(modules))
+	for _, mod := range modules {
+		if isNilModule(mod) {
+			continue // Find would panic on it; install reports it as InvalidModule
+		}
+		targets = append(targets, mod)
+	}
+	return targets
 }
 
 // root returns the Source the caller built, the outermost frame of the chain.

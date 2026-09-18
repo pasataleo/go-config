@@ -46,12 +46,22 @@ Core package. Defines the `Source` interface and the `Config` type that composes
 - `config.Find(source, v)` — query a single source for all fields
 - `config.Assign(source, v)` — populate fields from a single source
 - `config.FilterBySource[T](found, name)` — filter `Find` results by source name
+- `cfg.AdditionalTargets()` — the structs the sources bring along themselves, ready to pass to `Find` or `Assign`
 
 A source that also implements `config.DynamicSource` is given an `Enter` on the way down, before a field's children are walked, and returns the `Source` to stand in for itself over that field and everything below it. That is how `inject` scopes bindings to the struct they were installed in.
 
 A source that implements `config.Starter` is given a `Start` at the beginning of every `Assign`, before any field is visited. It is called on whichever `Source` will assign the walk's fields — for a `DynamicSource` that is the scope its own `Enter` opened, which is what makes the work belong to that one walk. That is where `inject` installs its registered modules, so what they bind goes with the walk. A source that is not a `DynamicSource` has no scope to be called in, so it is called on itself and whatever it does there outlives the walk.
 
 `Find` calls neither, so it stays read-only.
+
+A source implementing `config.AdditionalTargets` brings structs of its own to be populated, beyond the one passed to `Assign`. A module registered on an inject `Source` is such a struct: it holds flags and environment variables like any other, but nothing the caller owns points at it. `Find` does not walk them — it reports the one struct it is given, so a caller building help text calls `Find` on each additional target as well and merges:
+
+```go
+found := cfg.Find(&app)
+for _, target := range cfg.AdditionalTargets() {
+    maps.Copy(found, cfg.Find(target))
+}
+```
 
 ### `flags`
 
@@ -154,6 +164,16 @@ type App struct {
 
 Plain structs are not transparent — every struct is a scope, so a module that needs to publish to the level above has to live at that level. The same rule is what keeps a walk from leaving anything behind: nothing a module installs survives the `Assign` that installed it, so the same injector can be reused and a second `Assign` starts clean.
 
+#### Errors and panics
+
+Who made the mistake decides how it is reported.
+
+A value a user supplied comes back as an **error** — an unparseable flag, a missing environment variable, or a `Module.Install` that failed at runtime because the database was unreachable. The program is working and the input is not.
+
+Wiring the injector up wrongly **panics** — a duplicate binding in the same scope, a tag nothing is bound to, a module that is not a pointer, a module that installs itself. None of those depend on the input, so they fail on the first run and every run after it, and an error return would only carry them further from the line that caused them.
+
+The `inject` error codes (`NotBound`, `TypeMismatch`, `ModuleCycle`, `InvalidModule`) are used both ways: a panic carries the coded error as its value, so a `recover` can still ask what went wrong.
+
 #### Example
 
 ```go
@@ -203,43 +223,21 @@ injector.Bind(&TestDatabaseModule{}, "database")
 
 Both implement `Module`. The test module can provide mock bindings without needing real env vars or flags.
 
-## Planned: the rest of the features from `liamcervante/pause`
+## Planned: replace `main` with this branch
 
-> Design notes for work not yet done. Everything below is **not** in the library today. Delete
-> this section once it is, the same way the earlier `Planned:` notes went.
+> A note for work not yet done. Delete this section once it is, the same way the earlier
+> `Planned:` notes went.
 
 This branch rewound to before `main`'s `Register`/`Initializer` shape and rebuilt module
-bindings as lexical scopes instead. `main` and `liamcervante/pause` still hold features worth
-having, and this is what is left to bring across. Read them with
-`git show liamcervante/pause:pkg/inject/source.go` — but take the behaviour, not the shape:
-they were written against two flat binding frames, which the scope chain replaces.
+bindings as lexical scopes instead. It now has everything `main` and `liamcervante/pause` had
+that was worth keeping: scoped bindings, typed error codes, module validation, the cycle guard
+and per-walk install dedupe, installing module fields the walk reached itself, `Get`/`TryGet`,
+`Register` with `config.Starter`, and `config.AdditionalTargets`.
 
-Done so far: the scoping itself, typed error codes, module validation through the field's
-address, the cycle guard with per-walk install dedupe, installing module fields the walk
-reached itself, `Get`/`TryGet`, and `Register` with `config.Starter`.
+### What was deliberately left behind
 
-### The invariant that decides panic from error
-
-Written down in `pkg/inject/errors.go`, and it governs everything below. A value a user
-supplied — an unparseable flag, a missing environment variable — comes back as an **error**. A
-mistake in the wiring — a duplicate binding, a tag nothing is bound to, a module that is not a
-pointer, a module cycle — **panics**, because it fails on the first run and every run after it.
-`Module.Install` returning an error stays an error: `sql.Open` failing is a runtime failure,
-not a wiring fault.
-
-### 1. `config.AdditionalTargets`
-
-An optional source interface returning structs the source brings along itself, so a caller can
-`Find` their fields. Mostly exists *because* of `Register`: once a module is registered rather
-than declared as a field, its flags and env vars are not reachable from the caller's struct,
-and help text silently loses them. `inject.Source` returns every registered module, whether or
-not any `Assign` has installed it — the answer does not depend on a walk having run, which is
-the point.
-
-`Find` deliberately does not walk them. It reports the one struct it is given; a caller that
-wants the program's whole field surface calls `Find` on each additional target and merges.
-
-### Do not bring these across
+`main` and `liamcervante/pause` still hold these. They are not oversights, and reintroducing
+any of them would undo something the scope chain gives for free.
 
 - `Scoper`, `Scope()`, `localByTag`/`localByType`, `local()`, `tagDest()`, `typeDest()` — the
   two-frame model the scope chain replaces.
@@ -258,9 +256,9 @@ wants the program's whole field surface calls `Find` on each additional target a
 
 ### Finally
 
-Once this branch has parity, **overwrite `main` with it** — `main`'s `Register`/`Initializer`
-shape is superseded, so this is a replacement rather than a merge — and delete
-`liamcervante/pause`. Then delete this section.
+**Overwrite `main` with this branch** — `main`'s `Register`/`Initializer` shape is superseded,
+so this is a replacement rather than a merge — and delete `liamcervante/pause`. Then delete
+this section.
 
 Check `go-plugin` and `go-command` before that lands: both pin the old `go-config` and use
 `config.Must`, which this branch deliberately does not have — `config.New` never fails, so
