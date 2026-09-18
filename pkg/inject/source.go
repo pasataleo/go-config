@@ -229,7 +229,7 @@ func (s *Source) Assign(cfg *config.Config, path reflectx.Path, value reflect.Va
 		r, exists := s.lookupByTag(tag)
 		if !exists {
 			if optional {
-				return false, nil
+				return false, s.installModule(cfg, path, value, false)
 			}
 			panic(fmt.Errorf("required value not found for tag at %s: %s%s", path, tag, s.while()))
 		}
@@ -238,38 +238,32 @@ func (s *Source) Assign(cfg *config.Config, path reflectx.Path, value reflect.Va
 			return true, errorsx.Annotate(err, "path", path)
 		}
 		set(path, value, v)
-		if err := s.installModule(cfg, path, value); err != nil {
-			return true, err
-		}
-		return true, nil
+		return true, s.installModule(cfg, path, value, true)
 	}
 
 	r, ok := s.lookupByType(field.Type)
 	if !ok {
-		return false, nil
+		return false, s.installModule(cfg, path, value, false)
 	}
 	v, err := r.resolve(value)
 	if err != nil {
 		return true, errorsx.Annotate(err, "path", path)
 	}
 	set(path, value, v)
-	if err := s.installModule(cfg, path, value); err != nil {
-		return true, err
-	}
-	return true, nil
+	return true, s.installModule(cfg, path, value, true)
 }
 
-// installModule checks if the assigned value implements Module. If so, it
-// populates the module's own fields using the full config, then calls Install
-// to let the module register new bindings.
+// installModule checks whether the field holds a module, and installs it if so.
 //
-// The module's fields are populated with the config this Source was scoped by,
-// so they resolve against everything in scope where the module was found. Its
-// Install, though, is handed the enclosing frame: a module's bindings belong
-// beside it, where its siblings read from, not in the frame that closes with it.
-// Lookups inside Install start there too, which is where any module nested
-// inside this one published - so a module sees what its children bound.
-func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value reflect.Value) error {
+// populate says where the instance came from. A module a binding supplied
+// arrived from outside the walk with nothing filled in, so its fields are
+// populated here; one the walk reached as a struct field of its own was
+// allocated and filled in by the walk already, since Visit runs after a field's
+// children, and goes straight to Install.
+//
+// A walked module is installed but its field is not claimed - nothing was
+// assigned to it, so the sources after this one should still see it.
+func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value reflect.Value, populate bool) error {
 	mod, ok := asModule(value)
 	if !ok || isNilModule(mod) {
 		// Walk leaves a pointer nil where it declines to recurse, which is
@@ -277,7 +271,7 @@ func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value ref
 		// interface field that no binding claimed holds nothing to install.
 		return nil
 	}
-	if err := s.install(cfg, path, mod); err != nil {
+	if err := s.install(cfg, path, mod, populate); err != nil {
 		return errorsx.Annotate(err, "path", path)
 	}
 	return nil
@@ -288,7 +282,7 @@ func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value ref
 //
 // An instance this walk has installed already is skipped, and a module reached
 // from its own subtree is a cycle.
-func (s *Source) install(cfg *config.Config, path reflectx.Path, mod Module) error {
+func (s *Source) install(cfg *config.Config, path reflectx.Path, mod Module, populate bool) error {
 	// reflectx.Walk panics on anything that is not a non-nil pointer to a
 	// struct, so reject those here, where the module can be named. This is a
 	// panic rather than an error because nothing a user does can cause it: a
@@ -335,8 +329,10 @@ func (s *Source) install(cfg *config.Config, path reflectx.Path, mod Module) err
 		w.path = outer
 	}()
 
-	if err := cfg.Assign(mod); err != nil {
-		return errorsx.Wrapf(err, "failed to configure module %s", t)
+	if populate {
+		if err := cfg.Assign(mod); err != nil {
+			return errorsx.Wrapf(err, "failed to configure module %s", t)
+		}
 	}
 
 	// A nil parent means this Source is not being walked by a Config at all, so

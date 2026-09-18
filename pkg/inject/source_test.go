@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/pasataleo/go-config/pkg/config"
 	"github.com/pasataleo/go-reflectx/pkg/reflectx"
 	"github.com/pasataleo/go-testingx/pkg/diff"
 	"github.com/pasataleo/go-testingx/pkg/render"
@@ -282,12 +283,11 @@ func (m valueModule) Install(s *Source) error {
 func TestInstallModuleValidation(t *testing.T) {
 	t.Run("a_value_receiver_module_is_populated_through_the_fields_address", func(t *testing.T) {
 		type cfg struct {
-			Mod    valueModule `inject:"mod"`
-			Result string      `inject:"value-result"`
+			Mod    valueModule
+			Result string `inject:"value-result"`
 		}
 		s := New()
 		s.Bind("world", "name")
-		s.Bind(valueModule{}, "mod")
 		in := &cfg{}
 		want := &cfg{Mod: valueModule{Name: "world"}, Result: "hello world"}
 		testingx.Call(t, Assign, s, in).NoError()
@@ -359,6 +359,77 @@ type countingModule struct {
 func (m *countingModule) Install(s *Source) error {
 	m.installs++
 	return nil
+}
+
+// claimingSource records which fields inject left for the sources after it.
+type claimingSource struct {
+	seen []string
+}
+
+func (s *claimingSource) Name() string { return "claiming" }
+
+func (s *claimingSource) Find(_ *config.Config, _ reflectx.Path, _ reflect.Value, _ reflect.StructField) (interface{}, error) {
+	return nil, nil
+}
+
+func (s *claimingSource) Assign(_ *config.Config, path reflectx.Path, _ reflect.Value, _ reflect.StructField) (bool, error) {
+	s.seen = append(s.seen, path.String())
+	return false, nil
+}
+
+func TestInstallWalked(t *testing.T) {
+	t.Run("a_plain_module_field_installs", func(t *testing.T) {
+		type cfg struct {
+			Mod    staticModule
+			Result string `inject:"provided"`
+		}
+		s := New()
+		in := &cfg{}
+		want := &cfg{Result: "installed-value"}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("a_pointer_module_field_is_allocated_and_installs", func(t *testing.T) {
+		type cfg struct {
+			Mod    *staticModule
+			Result string `inject:"provided"`
+		}
+		s := New()
+		in := &cfg{}
+		want := &cfg{Mod: &staticModule{}, Result: "installed-value"}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("a_walked_module_field_is_not_claimed", func(t *testing.T) {
+		type cfg struct {
+			Mod staticModule
+		}
+		rest := new(claimingSource)
+		c := config.New(New(), rest)
+		testingx.Call(t, c.Assign, &cfg{}).NoError()
+		testingx.Capture(t, rest.seen).Contains("Mod")
+	})
+
+	t.Run("a_walked_module_publishes_to_the_struct_that_holds_it", func(t *testing.T) {
+		type inner struct {
+			Mod  staticModule
+			Peer string `inject:"provided"`
+		}
+		type cfg struct {
+			Inner inner
+			Above string `inject:"provided;optional"`
+		}
+		s := New()
+		in := &cfg{}
+		want := &cfg{
+			Inner: inner{Peer: "installed-value"},
+			Above: "",
+		}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
 }
 
 func TestInstallCycles(t *testing.T) {

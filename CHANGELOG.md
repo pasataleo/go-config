@@ -11,7 +11,8 @@
 ## IMPROVEMENTS
 
 - Nothing a module installs survives the `Assign` that installed it, so the same injector can be reused and a second `Assign` starts clean. There is nothing to tear down and nothing to leak: a scope stops being reachable when the walk leaves the subtree it was made for, on every path out, including the ones an error cuts short
-- A module's `Install` sees what modules nested inside it bound, since those published into the scope it is handed
+- A module reads what modules nested inside it bound through its own fields, which are populated in the scope those published into. `Install` itself is handed the enclosing scope, which is where the module publishes to rather than where its children did
+- A module field the walk reached itself is installed, where before only a field a binding claimed was. The field is not reported as claimed, so the sources after `inject` still see it
 - `config.Assign(source, v)` is now `config.New(source).Assign(v)` rather than a second hand-rolled walk, so there is one place that knows how a walk is driven
 - `inject.New` no longer allocates its maps up front; a scope that binds nothing costs a single small struct
 - A failed assignment reports the type it could not assign and the path it was assigning to, as a `TypeMismatch` rather than a bare string
