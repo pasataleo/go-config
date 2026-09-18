@@ -74,6 +74,8 @@ Dependency injection for struct fields, matched by `inject` struct tag or by typ
 
 - `source.Bind(value, tags...)` — bind a static value
 - `source.BindFunc(fn, tags...)` — bind a factory function that receives the current field value
+- `inject.Get[T](source)` / `inject.GetTag[T](source, tag)` — read a binding back without declaring a field, panicking if it is not there
+- `inject.TryGet[T](source)` / `inject.TryGetTag[T](source, tag)` — the same for a lookup that is genuinely optional, reporting whether it was found
 
 ### `required`
 
@@ -190,8 +192,8 @@ having, and this is what is left to bring across. Read them with
 they were written against two flat binding frames, which the scope chain replaces.
 
 Done so far: the scoping itself, typed error codes, module validation through the field's
-address, the cycle guard with per-walk install dedupe, and installing module fields the walk
-reached itself.
+address, the cycle guard with per-walk install dedupe, installing module fields the walk
+reached itself, and `Get`/`TryGet`.
 
 ### Two ways to install a module, and both are wanted
 
@@ -201,7 +203,7 @@ The two are complementary and neither replaces the other:
   a module a struct always wants — wiring that belongs to the shape of the config itself. Done.
 - **Registered up front on the injector.** Chosen at run time, before anything is walked, which
   is how a program swaps a real implementation for a fake one. These are the program's roots
-  and their bindings are global. Feature 2 below.
+  and their bindings are global. Feature 1 below.
 
 ```go
 injector := inject.New()
@@ -213,7 +215,7 @@ if testing {
 ```
 
 `Register` belongs to wiring time only, and must be unavailable once a walk starts — see
-feature 2.
+feature 1.
 
 ### The invariant that decides panic from error
 
@@ -224,22 +226,7 @@ pointer, a module cycle — **panics**, because it fails on the first run and ev
 `Module.Install` returning an error stays an error: `sql.Open` failing is a runtime failure,
 not a wiring fault.
 
-### 1. `Get` and `GetTag`
-
-Generic lookups so a module can read a binding back programmatically rather than only through a
-field. `Get[T](s)` matches as an untagged field of type `T` would; `GetTag[T](s, tag)` as a
-tagged one. Both resolve against the frame they are given, so inside an `Install` they see the
-enclosing scope — which is where a module's own children published.
-
-`get` calls a resolver with the zero value of its type, since there is no field to build on.
-
-**Open question.** Pause returns `(T, error)` with a `NotBound` code. Under the invariant above
-an unbound key is a wiring mistake and should panic, but a function with an error return is the
-caller *asking* whether something is bound, which is a question rather than a fault. Either
-keep `(T, error)`, or make `Get` panic and add `TryGet` returning `(T, bool)`. Decide before
-writing it.
-
-### 2. `Register` and `config.Initializer`
+### 1. `Register` and `config.Initializer`
 
 Register modules up front, outside the walk:
 
@@ -306,7 +293,7 @@ func (m *DatabaseModule) Install(s *inject.Source) error {
 }
 ```
 
-### 3. `config.AdditionalTargets`
+### 2. `config.AdditionalTargets`
 
 An optional source interface returning structs the source brings along itself, so a caller can
 `Find` their fields. Mostly exists *because* of `Register`: once a module is registered rather

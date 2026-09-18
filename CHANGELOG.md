@@ -13,6 +13,8 @@
 - Nothing a module installs survives the `Assign` that installed it, so the same injector can be reused and a second `Assign` starts clean. There is nothing to tear down and nothing to leak: a scope stops being reachable when the walk leaves the subtree it was made for, on every path out, including the ones an error cuts short
 - A module reads what modules nested inside it bound through its own fields, which are populated in the scope those published into. `Install` itself is handed the enclosing scope, which is where the module publishes to rather than where its children did
 - A module field the walk reached itself is installed, where before only a field a binding claimed was. The field is not reported as claimed, so the sources after `inject` still see it
+- `inject.Get[T]` and `inject.GetTag[T]` read a binding back without declaring a field for it, matching exactly as an untagged or tagged field of that type would. They resolve against the scope of the `Source` they are given, so inside an `Install` they see what is in scope where the module was found, shadowing included
+- `inject.TryGet[T]` and `inject.TryGetTag[T]` are the same for a lookup that is genuinely optional, reporting whether the binding was there instead of panicking. A binding that exists but cannot be assigned to `T` panics either way
 - `config.Assign(source, v)` is now `config.New(source).Assign(v)` rather than a second hand-rolled walk, so there is one place that knows how a walk is driven
 - `inject.New` no longer allocates its maps up front; a scope that binds nothing costs a single small struct
 - A failed assignment reports the type it could not assign and the path it was assigning to, as a `TypeMismatch` rather than a bare string

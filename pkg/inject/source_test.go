@@ -432,6 +432,127 @@ func TestInstallWalked(t *testing.T) {
 	})
 }
 
+// readingModule reads a binding inside Install rather than declaring a field
+// for it, and republishes what it found under a name of its own.
+type readingModule struct{}
+
+func (m *readingModule) Install(s *Source) error {
+	s.Bind("read "+GetTag[string](s, "readable"), "read-result")
+	return nil
+}
+
+func TestGet(t *testing.T) {
+	t.Run("by_type", func(t *testing.T) {
+		s := New()
+		s.Bind(42)
+		testingx.Capture(t, Get[int](s)).Equal(42)
+	})
+
+	t.Run("by_tag", func(t *testing.T) {
+		s := New()
+		s.Bind("hello", "greeting")
+		testingx.Capture(t, GetTag[string](s, "greeting")).Equal("hello")
+	})
+
+	t.Run("a_factory_is_called_with_the_zero_value", func(t *testing.T) {
+		s := New()
+		s.BindFunc(func(current string) string { return "<" + current + ">" }, "wrapped")
+		testingx.Capture(t, GetTag[string](s, "wrapped")).Equal("<>")
+	})
+
+	t.Run("an_unbound_type_panics", func(t *testing.T) {
+		testingx.Panics(t, nil, Get[int], New()).ErrorCode(NotBound)
+	})
+
+	t.Run("an_unbound_tag_panics", func(t *testing.T) {
+		testingx.Panics(t, nil, GetTag[string], New(), "missing").ErrorCode(NotBound)
+	})
+
+	t.Run("a_binding_of_the_wrong_type_panics", func(t *testing.T) {
+		s := New()
+		s.Bind("not an int", "number")
+		testingx.Panics(t, nil, GetTag[int], s, "number").ErrorCode(TypeMismatch)
+	})
+
+	t.Run("try_reports_an_unbound_type", func(t *testing.T) {
+		got, ok := TryGet[int](New())
+		testingx.Capture(t, got).Equal(0)
+		testingx.Capture(t, ok).False()
+	})
+
+	t.Run("try_reports_an_unbound_tag", func(t *testing.T) {
+		got, ok := TryGetTag[string](New(), "missing")
+		testingx.Capture(t, got).Equal("")
+		testingx.Capture(t, ok).False()
+	})
+
+	t.Run("try_returns_a_binding_that_is_there", func(t *testing.T) {
+		s := New()
+		s.Bind("hello", "greeting")
+		got, ok := TryGetTag[string](s, "greeting")
+		testingx.Capture(t, got).Equal("hello")
+		testingx.Capture(t, ok).True()
+	})
+
+	t.Run("install_reads_the_scope_the_module_was_found_in", func(t *testing.T) {
+		type inner struct {
+			Mod    *shadowModule  `inject:"shadow-mod"`
+			Reader *readingModule `inject:"reader"`
+			Result string         `inject:"read-result"`
+		}
+		type cfg struct {
+			Inner inner
+		}
+		s := New()
+		s.Bind(&shadowModule{}, "shadow-mod")
+		s.Bind(&readingModule{}, "reader")
+		// shadowModule binds "colour", not "readable", so the tag the reader
+		// wants comes from the outermost scope unless something shadows it.
+		s.Bind("outer", "readable")
+
+		in := &cfg{}
+		want := &cfg{Inner: inner{
+			Mod:    &shadowModule{},
+			Reader: &readingModule{},
+			Result: "read outer",
+		}}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+
+	t.Run("install_sees_a_sibling_modules_binding_shadowing_the_outer_one", func(t *testing.T) {
+		type inner struct {
+			Shadow *readableShadowModule `inject:"readable-shadow"`
+			Reader *readingModule        `inject:"reader"`
+			Result string                `inject:"read-result"`
+		}
+		type cfg struct {
+			Inner inner
+		}
+		s := New()
+		s.Bind(&readableShadowModule{}, "readable-shadow")
+		s.Bind(&readingModule{}, "reader")
+		s.Bind("outer", "readable")
+
+		in := &cfg{}
+		want := &cfg{Inner: inner{
+			Shadow: &readableShadowModule{},
+			Reader: &readingModule{},
+			Result: "read inner",
+		}}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(want)
+	})
+}
+
+// readableShadowModule shadows the "readable" tag for its own scope.
+type readableShadowModule struct{}
+
+func (m *readableShadowModule) Install(s *Source) error {
+	s.Bind("inner", "readable")
+	return nil
+}
+
 func TestInstallCycles(t *testing.T) {
 	t.Run("a_module_that_requires_itself_is_a_cycle", func(t *testing.T) {
 		type cfg struct {

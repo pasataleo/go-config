@@ -510,6 +510,84 @@ func convert(target reflect.Value, value interface{}) error {
 	return errorsx.Newf(TypeMismatch, nil, "type %s is not assignable to %s", rv.Type(), target.Type())
 }
 
+// Get returns the value bound to T, matching as an untagged field of that type
+// would. It is how a module reads a binding back programmatically rather than
+// by declaring a field for it, and it resolves against the scope of the Source
+// it is given - so inside an Install it sees what is in scope where the module
+// was found.
+//
+// It panics if nothing is bound to T, the same way a field tagged for a binding
+// that does not exist does: the field and the binding are both fixed at compile
+// time, so a missing one fails every run. TryGet is the form for a lookup that
+// is genuinely optional.
+//
+// A BindFunc factory is called afresh on every Get, with the zero value of its
+// type since there is no field to build on. A factory that fails panics as
+// well, because Get has nowhere to put an error - a binding whose failure has
+// to be handled belongs in a field, where Assign reports it.
+func Get[T any](s *Source) T {
+	out, ok := TryGet[T](s)
+	if !ok {
+		panic(errorsx.Newf(NotBound, nil, "no binding for type %s", reflect.TypeFor[T]()))
+	}
+	return out
+}
+
+// TryGet is Get for a binding that may legitimately not be there, reporting
+// whether it was rather than panicking. Everything else still panics: a binding
+// that exists but cannot be assigned to T is a wiring mistake either way.
+func TryGet[T any](s *Source) (T, bool) {
+	var out T
+	target := reflect.ValueOf(&out).Elem()
+
+	r, ok := s.lookupByType(target.Type())
+	if !ok {
+		return out, false
+	}
+	read(r, target)
+	return out, true
+}
+
+// GetTag returns the value bound to a tag. It is the Get equivalent of a field
+// tagged `inject:"<tag>"`.
+func GetTag[T any](s *Source, tag string) T {
+	out, ok := TryGetTag[T](s, tag)
+	if !ok {
+		panic(errorsx.Newf(NotBound, nil, "no binding for tag %s", tag))
+	}
+	return out
+}
+
+// TryGetTag is GetTag for a tag that may legitimately not be bound, the
+// equivalent of a field tagged `inject:"<tag>;optional"`.
+func TryGetTag[T any](s *Source, tag string) (T, bool) {
+	var out T
+	target := reflect.ValueOf(&out).Elem()
+
+	r, ok := s.lookupByTag(tag)
+	if !ok {
+		return out, false
+	}
+	read(r, target)
+	return out, true
+}
+
+// read resolves r into target. BindFunc guarantees a factory's argument type
+// matches its return type, so the zero value of outType is always a valid
+// stand-in for the field value a resolver would otherwise receive.
+func read(r resolver, target reflect.Value) {
+	if !canAssign(r.outType, target.Type()) {
+		panic(errorsx.Newf(TypeMismatch, nil, "type %s is not assignable to %s", r.outType, target.Type()))
+	}
+	v, err := r.resolve(reflect.Zero(r.outType))
+	if err != nil {
+		panic(err)
+	}
+	if err := convert(target, v); err != nil {
+		panic(err)
+	}
+}
+
 // Find returns a map from field path to the Match that describes how the field
 // would be injected.
 func Find(source *Source, v interface{}) map[string]Match {
