@@ -40,6 +40,26 @@ type DynamicSource interface {
 	Enter(cfg *Config, path reflectx.Path) (Source, error)
 }
 
+// Starter is an optional interface for Sources with work to do at the start of
+// every Assign, before any field is visited. Assign calls Start on every source
+// that implements it, in source order, once the sources have scoped themselves
+// for the walk.
+//
+// Start is called on the Source that will assign the walk's fields, which for a
+// DynamicSource is the scope its own Enter opened rather than the Source the
+// caller holds. That is what lets the work belong to the one Assign: an inject
+// Source installs the modules registered on it, and their bindings live for
+// that walk and no longer, so every Assign starts from the same wiring rather
+// than from whatever the last one left behind.
+//
+// A Source that is not a DynamicSource has no scope to be called in, so it is
+// called on itself and whatever it does there outlives the walk like any other
+// state it keeps. Implementing Starter alone is for a Source that wants a hook
+// before the fields, not for one that wants its work undone afterwards.
+type Starter interface {
+	Start(cfg *Config) error
+}
+
 // Config holds an ordered list of sources for populating struct fields.
 // Sources are consulted in order, with earlier sources taking priority.
 type Config struct {
@@ -134,6 +154,9 @@ func (config *Config) Assign(v interface{}) error {
 	if err != nil {
 		return err
 	}
+	if err := root.start(); err != nil {
+		return err
+	}
 
 	walker := reflectx.Walker{
 		Enter: func(path reflectx.Path, _ reflect.Value, _ reflect.StructField, data interface{}) (interface{}, error) {
@@ -144,6 +167,25 @@ func (config *Config) Assign(v interface{}) error {
 		},
 	}
 	return walker.Walk(v, root)
+}
+
+// start gives every Starter its chance to act before the walk visits anything.
+// It runs on the scoped sources, so a DynamicSource is called as the scope it
+// opened and whatever it does there goes when the walk does; one that did not
+// scope itself is called as itself. Errors aggregate rather than stopping at
+// the first, the same way the walk's own do.
+func (config *Config) start() error {
+	var errs error
+	for _, source := range config.sources {
+		starter, ok := source.(Starter)
+		if !ok {
+			continue
+		}
+		if err := starter.Start(config); err != nil {
+			errs = errorsx.Append(errs, errorsx.Annotate(err, "source", source.Name()))
+		}
+	}
+	return errs
 }
 
 // assign offers one field to each of the config's sources in turn, and is where
@@ -168,6 +210,10 @@ func (config *Config) assign(path reflectx.Path, value reflect.Value, field refl
 //
 // Note: Find will initialize nil pointer fields in v as a side effect of
 // traversal.
+//
+// Find never calls Start. Reporting what a program's fields are should not run
+// a Source's side effects, so anything that only exists once a walk has begun -
+// the bindings an inject module installs, say - is not reported here.
 func Find(source Source, v interface{}) map[string]interface{} {
 	cfg := New(source)
 	found := map[string]interface{}{}

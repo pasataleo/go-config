@@ -553,6 +553,122 @@ func (m *readableShadowModule) Install(s *Source) error {
 	return nil
 }
 
+// prodModule and testModule are the same wiring chosen two different ways.
+type prodModule struct{}
+
+func (m *prodModule) Install(s *Source) error {
+	s.Bind("prod", "backend")
+	return nil
+}
+
+type testModule struct{}
+
+func (m *testModule) Install(s *Source) error {
+	s.Bind("test", "backend")
+	return nil
+}
+
+func TestRegister(t *testing.T) {
+	t.Run("a_registered_module_installs_before_the_walk", func(t *testing.T) {
+		type cfg struct {
+			Backend string `inject:"backend"`
+		}
+		s := New()
+		s.Register(&prodModule{})
+		in := &cfg{}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(&cfg{Backend: "prod"})
+	})
+
+	t.Run("registration_picks_the_wiring_at_run_time", func(t *testing.T) {
+		type cfg struct {
+			Backend string `inject:"backend"`
+		}
+		s := New()
+		s.Register(&testModule{})
+		in := &cfg{}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(&cfg{Backend: "test"})
+	})
+
+	t.Run("registration_order_is_dependency_order", func(t *testing.T) {
+		type cfg struct {
+			Result string `inject:"read-result"`
+		}
+		s := New()
+		s.Bind("outer", "readable")
+		s.Register(&readableShadowModule{}, &readingModule{})
+		in := &cfg{}
+		// readableShadowModule binds "readable" into the walk's scope, and the
+		// reader registered after it sees that rather than the outer binding.
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(&cfg{Result: "read inner"})
+	})
+
+	t.Run("registered_bindings_do_not_outlive_the_assign", func(t *testing.T) {
+		type cfg struct {
+			Backend string `inject:"backend"`
+		}
+		s := New()
+		s.Register(&prodModule{})
+		testingx.Call(t, Assign, s, &cfg{}).NoError()
+		// The second Assign works only because the first left nothing behind:
+		// a surviving "backend" would collide when the module installs again.
+		in := &cfg{}
+		testingx.Call(t, Assign, s, in).NoError()
+		testingx.Capture(t, in).Equal(&cfg{Backend: "prod"})
+	})
+
+	t.Run("a_registered_module_installs_once_per_assign", func(t *testing.T) {
+		mod := &countingModule{}
+		s := New()
+		s.Bind("counted", "counted-name")
+		s.Register(mod)
+		testingx.Call(t, Assign, s, &struct{}{}).NoError()
+		testingx.Capture(t, mod.installs).Equal(1)
+	})
+
+	t.Run("a_registered_module_reached_as_a_field_installs_once", func(t *testing.T) {
+		type cfg struct {
+			Mod *countingModule `inject:"mod"`
+		}
+		mod := &countingModule{}
+		s := New()
+		s.Bind("counted", "counted-name")
+		s.Bind(mod, "mod")
+		s.Register(mod)
+		testingx.Call(t, Assign, s, &cfg{}).NoError()
+		testingx.Capture(t, mod.installs).Equal(1)
+	})
+
+	t.Run("register_panics_on_a_scope", func(t *testing.T) {
+		type cfg struct {
+			Mod *registeringModule `inject:"registering"`
+		}
+		s := New()
+		s.Bind(&registeringModule{}, "registering")
+		testingx.Panics(t, nil, Assign, s, &cfg{})
+	})
+
+	t.Run("find_does_not_install_registered_modules", func(t *testing.T) {
+		type cfg struct {
+			Backend string `inject:"backend"`
+		}
+		s := New()
+		s.Register(&prodModule{})
+		testingx.Capture(t, Find(s, &cfg{})).Equal(map[string]Match{})
+	})
+}
+
+// registeringModule tries to Register from inside its own Install, where the
+// Source it is handed is a scope rather than the one New built.
+type registeringModule struct{}
+
+func (m *registeringModule) Install(s *Source) error {
+	s.Register(&prodModule{})
+	return nil
+}
+
 func TestInstallCycles(t *testing.T) {
 	t.Run("a_module_that_requires_itself_is_a_cycle", func(t *testing.T) {
 		type cfg struct {

@@ -47,7 +47,11 @@ Core package. Defines the `Source` interface and the `Config` type that composes
 - `config.Assign(source, v)` — populate fields from a single source
 - `config.FilterBySource[T](found, name)` — filter `Find` results by source name
 
-A source that also implements `config.DynamicSource` is given an `Enter` on the way down, before a field's children are walked, and returns the `Source` to stand in for itself over that field and everything below it. That is how `inject` scopes bindings to the struct they were installed in. `Find` never calls `Enter`, so it stays read-only.
+A source that also implements `config.DynamicSource` is given an `Enter` on the way down, before a field's children are walked, and returns the `Source` to stand in for itself over that field and everything below it. That is how `inject` scopes bindings to the struct they were installed in.
+
+A source that implements `config.Starter` is given a `Start` at the beginning of every `Assign`, before any field is visited. It is called on whichever `Source` will assign the walk's fields — for a `DynamicSource` that is the scope its own `Enter` opened, which is what makes the work belong to that one walk. That is where `inject` installs its registered modules, so what they bind goes with the walk. A source that is not a `DynamicSource` has no scope to be called in, so it is called on itself and whatever it does there outlives the walk.
+
+`Find` calls neither, so it stays read-only.
 
 ### `flags`
 
@@ -74,6 +78,7 @@ Dependency injection for struct fields, matched by `inject` struct tag or by typ
 
 - `source.Bind(value, tags...)` — bind a static value
 - `source.BindFunc(fn, tags...)` — bind a factory function that receives the current field value
+- `source.Register(modules...)` — queue root modules for every `Assign` to install
 - `inject.Get[T](source)` / `inject.GetTag[T](source, tag)` — read a binding back without declaring a field, panicking if it is not there
 - `inject.TryGet[T](source)` / `inject.TryGetTag[T](source, tag)` — the same for a lookup that is genuinely optional, reporting whether it was found
 
@@ -99,7 +104,25 @@ type Module interface {
 }
 ```
 
-A module is installed whether or not a binding claims its field:
+There are two ways a module gets installed, and they are complementary:
+
+- **Declared as a struct field.** Wiring that belongs to the shape of the config itself — a struct that always wants that module.
+- **Registered on the injector with `source.Register(...)`.** Chosen at run time, before anything is walked, which is how a program swaps a real implementation for a fake one. Registration order is dependency order, and their bindings are in force for the whole `Assign`.
+
+```go
+injector := inject.New()
+if testing {
+    injector.Register(&TestDatabaseModule{})
+} else {
+    injector.Register(&DatabaseModule{})
+}
+```
+
+`Register` belongs to wiring time and works only on the `Source` that `inject.New` built. Every other `Source` is a scope opened during an `Assign`, and registering into one panics — the module graph is fixed before a walk starts, so `Find` can report every flag, env var and usage string a program has without installing anything. A module that needs another module declares it as a field.
+
+Registered modules install at the start of every `Assign`, into the scope that `Assign` opens, so they follow the same rule as everything else: their bindings last for that walk and no longer, and the next `Assign` installs them again from the same wiring. Nothing accumulates on the injector.
+
+A module declared as a field is installed whether or not a binding claims it:
 
 - **A field the walk reached itself** — `Mod DBModule`, with nothing bound to it. The walk allocated it and every source has already filled its fields in, so it goes straight to `Install`. The field is not reported as claimed, so the sources after `inject` still see it.
 - **A field a binding claimed** — `Mod *DBModule \`inject:"database"\``. The instance came from outside the walk with nothing filled in, so its own fields are populated from the full config first, then `Install` runs. This is also the only way an interface-typed field can work, since the walk does not recurse into interfaces.
@@ -193,29 +216,7 @@ they were written against two flat binding frames, which the scope chain replace
 
 Done so far: the scoping itself, typed error codes, module validation through the field's
 address, the cycle guard with per-walk install dedupe, installing module fields the walk
-reached itself, and `Get`/`TryGet`.
-
-### Two ways to install a module, and both are wanted
-
-The two are complementary and neither replaces the other:
-
-- **Declared as a struct field.** The walk finds it, populates it and installs it. This is for
-  a module a struct always wants — wiring that belongs to the shape of the config itself. Done.
-- **Registered up front on the injector.** Chosen at run time, before anything is walked, which
-  is how a program swaps a real implementation for a fake one. These are the program's roots
-  and their bindings are global. Feature 1 below.
-
-```go
-injector := inject.New()
-if testing {
-    injector.Register(&TestDatabaseModule{})
-} else {
-    injector.Register(&DatabaseModule{})
-}
-```
-
-`Register` belongs to wiring time only, and must be unavailable once a walk starts — see
-feature 1.
+reached itself, `Get`/`TryGet`, and `Register` with `config.Starter`.
 
 ### The invariant that decides panic from error
 
@@ -226,80 +227,14 @@ pointer, a module cycle — **panics**, because it fails on the first run and ev
 `Module.Install` returning an error stays an error: `sql.Open` failing is a runtime failure,
 not a wiring fault.
 
-### 1. `Register` and `config.Initializer`
-
-Register modules up front, outside the walk:
-
-```go
-injector := inject.New()
-injector.Register(&DatabaseModule{})
-cfg, err := config.New(injector, new(env.Source))
-```
-
-`config.Initializer` is an optional source interface (`Init(cfg *Config) error`) that
-`config.New` calls in source order once the full source list is known. `inject.Source.Init`
-installs everything queued by `Register`. Modules registered after `Init` returns queue for a
-subsequent one.
-
-`config.New` becomes `(*Config, error)`, with `Must` for callers that treat a failed source as
-fatal at startup. The error is needed for `Install` failures, not for wiring faults.
-
-#### `Register` only works on the `Source` that `New` built
-
-The module graph is fixed before anything is walked. That is what lets `Find` report every
-flag, env var and usage string a program has without running an `Install`, and it is why a
-module that needs another module declares it as a field rather than registering one mid-flight.
-
-Rather than track whether a walk is in progress, make it structural: **`Register` panics on any
-`Source` with a parent.** Only the one `New` built has none; every other is a frame `Enter`
-opened during an `Assign`, and those can never register. No counter, no flag, and nothing on
-the `Source` becomes mutable — so concurrent `Assign`s stay safe by construction.
-
-This closes the path that matters, because user code is never handed the root `Source` during a
-walk. `install` calls `mod.Install(s.parent)` where `s` is the field's own frame, so the
-shallowest thing an `Install` can receive is the walk's root frame — whose parent is the root
-`Source`, not the root itself. A `BindFunc` factory receives only a `reflect.Value` and has no
-`Source` at all.
-
-The gap to write down: this keys on the object, not the moment. Closing over the `injector`
-variable and calling `Register` from inside an `Install` still gets through. Pause's `busy`
-counter caught that; this does not. Add the counter if it ever bites — the frame rule is the
-cheap 95%.
-
-It fits the scope chain better than it fitted pause. A registered root's `Install` is handed
-the injector itself, so its bindings are permanent and global; anything nested inside it lands
-in the scope `Init`'s own `Assign` opened and dies when `Init` returns. Pause needed an
-`initializing` flag and a `local()` predicate to force that, and both disappear.
-
-That does leave one place `Register` is still reachable, and it is the deliberate one: a
-registered root's `Install` holds the root `Source`, because that is what makes its bindings
-global. **Decide what that means.** Either `Init` drains `pending` in a loop, so a root module
-registering further modules is a supported way to build a graph at wiring time — the install
-dedupe already stops one registering itself forever — or registering there is rejected. What it
-must not do is silently queue for an `Init` that never comes, which is what falls out if
-`Init` drains once.
-
-**State the consequence in the docs:** a registered root's grandchildren are not global. A root
-that wants to expose what a child module bound has to re-`Bind` it:
-
-```go
-type DatabaseModule struct {
-    Pool *PoolModule // binds *sql.DB into DatabaseModule's scope
-}
-
-func (m *DatabaseModule) Install(s *inject.Source) error {
-    s.Bind(m.conn) // -> global, the app sees this
-    return nil
-}
-```
-
-### 2. `config.AdditionalTargets`
+### 1. `config.AdditionalTargets`
 
 An optional source interface returning structs the source brings along itself, so a caller can
 `Find` their fields. Mostly exists *because* of `Register`: once a module is registered rather
 than declared as a field, its flags and env vars are not reachable from the caller's struct,
-and help text silently loses them. `inject.Source` returns every registered module, installed
-or not — the answer is the same before and after `Init`, which is the point.
+and help text silently loses them. `inject.Source` returns every registered module, whether or
+not any `Assign` has installed it — the answer does not depend on a walk having run, which is
+the point.
 
 `Find` deliberately does not walk them. It reports the one struct it is given; a caller that
 wants the program's whole field surface calls `Find` on each additional target and merges.
@@ -312,11 +247,14 @@ wants the program's whole field surface calls `Find` on each additional target a
   `cfg.Assign(mod)` already does the right thing, because the `cfg` a source is handed is
   already scoped.
 - The `sync.RWMutex` concurrency guard. It was needed because `Assign` mutated the `Source`;
-  it no longer does, so concurrent `Assign`s are safe by construction. If `Register`/`Init`
-  wants a guard, scope it to those and the install stack rather than the whole `Config`.
+  it no longer does, so concurrent `Assign`s are safe by construction.
+- `config.Initializer` and `config.Must`, and `config.New` returning `(*Config, error)`.
+  Registered modules install per-`Assign` through `config.Starter` instead, so there is no
+  wiring-time step that can fail and `New` cannot return an error. An `Install` failure
+  surfaces from `Assign`, which already returns one.
 - **Dropping `cfg *Config` from `Source.Find` and `Source.Assign`.** `main` and pause removed
-  it in favour of `Initializer` holding the `Config`. That parameter is how the scope reaches
-  `inject` now, so it stays. `Initializer` can come across without it.
+  it in favour of a source holding the `Config`. That parameter is how the scope reaches
+  `inject` now, so it stays.
 
 ### Finally
 
@@ -325,4 +263,5 @@ shape is superseded, so this is a replacement rather than a merge — and delete
 `liamcervante/pause`. Then delete this section.
 
 Check `go-plugin` and `go-command` before that lands: both pin the old `go-config` and use
-`config.Must`, which does not exist on this branch.
+`config.Must`, which this branch deliberately does not have — `config.New` never fails, so
+those call sites become plain `config.New`.

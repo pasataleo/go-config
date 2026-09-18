@@ -27,6 +27,7 @@ type Module interface {
 var (
 	_ config.Source        = (*Source)(nil)
 	_ config.DynamicSource = (*Source)(nil)
+	_ config.Starter       = (*Source)(nil)
 
 	errorType  = reflect.TypeOf((*error)(nil)).Elem()
 	moduleType = reflect.TypeOf((*Module)(nil)).Elem()
@@ -74,6 +75,11 @@ type Source struct {
 	// every frame below it. Nil on the Source the caller built, which belongs to
 	// no walk.
 	walk *walk
+
+	// modules is what Register has queued, in registration order. Only ever set
+	// on the Source the caller built, since only that one can Register - a frame
+	// reaches them with root().
+	modules []Module
 }
 
 // walk is what one Assign has to remember across the frames it opens: which
@@ -88,6 +94,11 @@ type walk struct {
 	// fields walks that module from a root of its own, so the path is the
 	// field's, not a trail back to the struct the caller passed in.
 	stack []reflect.Type
+
+	// registered records that this walk has installed the registered modules.
+	// A walk nested inside it - a module's own fields being populated - shares
+	// this and so does not install them again.
+	registered bool
 
 	// path is where the innermost installing module was found, for the messages
 	// of anything that goes wrong underneath it.
@@ -120,6 +131,57 @@ func (s *Source) Enter(_ *config.Config, _ reflectx.Path) (config.Source, error)
 		w = &walk{}
 	}
 	return &Source{parent: s, walk: w}, nil
+}
+
+// Register queues modules for every Assign to install, before it walks
+// anything. These are the program's root modules: registration order is
+// dependency order, and they are how a program picks its wiring at run time -
+// a real implementation or a fake one - rather than from the shape of the
+// struct being assigned.
+//
+// Register belongs to wiring time, and works only on the Source New built. Every
+// other Source is a scope opened during an Assign, and registering into one
+// panics: the module graph is fixed before a walk starts, so that Find can
+// report every flag, env var and usage string a program has without installing
+// anything. A module that needs another module declares it as a field.
+func (s *Source) Register(modules ...Module) {
+	if s.parent != nil {
+		panic("inject: Register works only on the Source inject.New built, not on a scope opened during Assign; register before the walk, or declare the module as a struct field")
+	}
+	s.modules = append(s.modules, modules...)
+}
+
+// Start implements config.Starter. It installs the registered modules into the
+// scope the Assign has just opened, so what they bind is in force for the whole
+// of that walk and gone after it - the next Assign installs them again, against
+// the same wiring rather than whatever the last one left behind.
+func (s *Source) Start(cfg *config.Config) error {
+	w := s.walk
+	if w == nil || w.registered {
+		// Either nothing opened a walk, or this is a walk nested inside one
+		// that has already installed them - a module's own fields being
+		// populated, which must not install the roots a second time.
+		return nil
+	}
+	w.registered = true
+
+	// The scope itself is what a registered module publishes into, not the one
+	// above it: a root module's bindings are for the whole of this walk, the
+	// way a module at the top level of the struct being assigned is.
+	for _, mod := range s.root().modules {
+		if err := s.install(cfg, nil, mod, s, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// root returns the Source the caller built, the outermost frame of the chain.
+func (s *Source) root() *Source {
+	for s.parent != nil {
+		s = s.parent
+	}
+	return s
 }
 
 // Bind registers a static value for injection. If no tags are specified, the
@@ -271,7 +333,15 @@ func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value ref
 		// interface field that no binding claimed holds nothing to install.
 		return nil
 	}
-	if err := s.install(cfg, path, mod, populate); err != nil {
+	// A module publishes beside itself, into the scope its field belongs to,
+	// rather than into the scope that closes with it. A nil parent means this
+	// Source is not being walked by a Config at all, so its own is the only
+	// place to publish to.
+	publish := s.parent
+	if publish == nil {
+		publish = s
+	}
+	if err := s.install(cfg, path, mod, publish, populate); err != nil {
 		return errorsx.Annotate(err, "path", path)
 	}
 	return nil
@@ -282,7 +352,7 @@ func (s *Source) installModule(cfg *config.Config, path reflectx.Path, value ref
 //
 // An instance this walk has installed already is skipped, and a module reached
 // from its own subtree is a cycle.
-func (s *Source) install(cfg *config.Config, path reflectx.Path, mod Module, populate bool) error {
+func (s *Source) install(cfg *config.Config, path reflectx.Path, mod Module, publish *Source, populate bool) error {
 	// reflectx.Walk panics on anything that is not a non-nil pointer to a
 	// struct, so reject those here, where the module can be named. This is a
 	// panic rather than an error because nothing a user does can cause it: a
@@ -335,13 +405,7 @@ func (s *Source) install(cfg *config.Config, path reflectx.Path, mod Module, pop
 		}
 	}
 
-	// A nil parent means this Source is not being walked by a Config at all, so
-	// there is no enclosing frame and its own is the only place to publish to.
-	enclosing := s.parent
-	if enclosing == nil {
-		enclosing = s
-	}
-	if err := mod.Install(enclosing); err != nil {
+	if err := mod.Install(publish); err != nil {
 		return errorsx.Wrapf(err, "failed to install module %s", t)
 	}
 
