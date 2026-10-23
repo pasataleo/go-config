@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
 
 jobs:
   build:
@@ -19,6 +20,15 @@ jobs:
       - run: make tidy
       - run: make generate
       - run: make fmt
+
+      - name: Check for uncommitted changes
+        run: |
+          if ! git diff --exit-code || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+            git status --short
+            echo "::error::make tidy, generate or fmt changed files, run make all and commit the changes"
+            exit 1
+          fi
+
       - run: make lint
       - run: make test
       - run: make build

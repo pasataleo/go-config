@@ -1,3 +1,5 @@
+version: "2"
+
 linters:
   enable:
     - errcheck
@@ -5,10 +7,19 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    - gosimple
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - unparam
     - errorlint
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
