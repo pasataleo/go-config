@@ -7,6 +7,10 @@
 - `inject` error codes: `NotBound`, `TypeMismatch`, `ModuleCycle` and `InvalidModule`, so a caller can tell why a lookup or an install failed without matching on the message
 - A module reached from its own subtree panics with a `ModuleCycle` code naming the field it was found at. It used to recurse until it ran out of memory, since populating a module's fields walks it afresh and nothing was watching for a module it had already started
 - A module instance reached twice in one `Assign` - by two fields bound to it, say - installs once. The record is per walk, so a later `Assign` installs it again
+- `oneof` package: a source that makes required fields alternatives. Fields tagged `oneof:"<group>"` form a group, and exactly one name in it must be set: neither fails with `MissingValue`, more than one with the new `ConflictingValues` code. Set means what it does for a plain required field, so a flag given as zero counts. Groups are global, as flag names are: members join from any struct, including modules `inject` populates with `Assign`s of their own, and a name read in several places is one member. It depends on `required`, which works without it: every field in a group needs a `required` tag, `required.Source` has to be configured, and `oneof.Source` goes before every source that claims fields
+- `Config.Data`: a `map[string]any` sources share during one `Assign`, created by the outermost `Assign` and shared with the ones nested inside it, for a source to record something one field at a time and another, or its own `Finish`, to read it later. Nil during `Find`
+- `config.Finisher`: an optional source interface called once per `Assign` the caller made, at the end of the outermost one, to check what sources built up in `Data` during the walk. Its errors join the walk's, and `Find` never calls it
+- `config.ConflictingValues` error code, for more than one value set where only one may be
 
 ## IMPROVEMENTS
 

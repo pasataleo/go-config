@@ -60,6 +60,25 @@ type Starter interface {
 	Start(cfg *Config) error
 }
 
+// Finisher is an optional interface for Sources with work to do at the end of
+// every Assign, once every field has been visited. Assign calls Finish on every
+// source that implements it, in source order, and its errors join the walk's
+// own.
+//
+// It exists for checks that span fields rather than belonging to any one of
+// them, which a source builds up in Data as the walk hands it one field at a
+// time: oneof gathers its groups that way, and checks them here.
+//
+// Finish is called once per Assign the caller made, at the end of the
+// outermost one. The Assigns a source makes itself through the Config it was
+// handed - inject populating a module - are part of that walk, so what they
+// record is in Data by the time Finish runs. Like Start, it is called on the
+// Source that assigned the walk's fields, which for a DynamicSource is the
+// scope its own Enter opened at the root.
+type Finisher interface {
+	Finish(cfg *Config) error
+}
+
 // AdditionalTargets is an optional interface for Sources that bring structs of
 // their own to be populated, beyond the one a caller passes to Assign. A module
 // registered on an inject Source is such a struct: it holds flags and
@@ -77,6 +96,24 @@ type AdditionalTargets interface {
 // Sources are consulted in order, with earlier sources taking priority.
 type Config struct {
 	sources []Source
+
+	// data is shared by every Config scoped from the root of one Assign, and
+	// by the Assigns nested inside it. It is nil on the Config the caller
+	// built, which is how Assign tells the outermost walk from a nested one.
+	data map[string]any
+}
+
+// Data is where sources share what they learn during one Assign, keyed by
+// whatever each source documents it writes. It is created by the outermost
+// Assign the caller makes, and shared with every Assign nested inside it, so a
+// source can record something while assigning one field and another can read
+// it while assigning a later one, or in Finish.
+//
+// There is no guarantee any key is there: the source that writes it may not be
+// configured, or may not have reached it yet. Find has no walk to share, so
+// Data is nil there.
+func (config *Config) Data() map[string]any {
+	return config.data
 }
 
 // New creates a Config with the given sources. Sources are tried in order
@@ -93,6 +130,7 @@ func New(sources ...Source) *Config {
 func (config *Config) enter(path reflectx.Path) (*Config, error) {
 	scoped := &Config{
 		sources: make([]Source, len(config.sources)),
+		data:    config.data,
 	}
 
 	var errs error
@@ -118,7 +156,8 @@ func (config *Config) enter(path reflectx.Path) (*Config, error) {
 
 // Find queries all sources for every exported field in v and returns a map
 // from field path to source name to the value that source would provide.
-// Unlike Assign, all sources are queried regardless of priority.
+// Unlike Assign, all sources are queried regardless of priority, and neither
+// Start nor Finish is called.
 //
 // Returned value is path -> tag -> value.
 //
@@ -162,10 +201,18 @@ func (config *Config) Find(v interface{}) map[string]map[string]interface{} {
 // walk: a source that binds something at the top level of v is still writing
 // into the walk, not into the sources New was given, so nothing it does here
 // outlives the call.
+//
+// An Assign made through a Config that a walk handed to a source is nested in
+// that walk: it shares the walk's Data, and leaves Finish to the outermost.
 func (config *Config) Assign(v interface{}) error {
+	outermost := config.data == nil
+
 	root, err := config.enter(nil)
 	if err != nil {
 		return err
+	}
+	if outermost {
+		root.data = map[string]any{}
 	}
 	if err := root.start(); err != nil {
 		return err
@@ -179,7 +226,16 @@ func (config *Config) Assign(v interface{}) error {
 			return data.(*Config).assign(path, value, field)
 		},
 	}
-	return walker.Walk(v, root)
+
+	// Finish runs even when the walk failed, so that a problem spanning fields
+	// is reported alongside the ones found in them, as each field's own are.
+	errs := walker.Walk(v, root)
+	if outermost {
+		if err := root.finish(); err != nil {
+			errs = errorsx.Append(errs, err)
+		}
+	}
+	return errs
 }
 
 // AdditionalTargets returns every struct the sources bring along themselves, in
@@ -212,6 +268,23 @@ func (config *Config) start() error {
 		}
 		if err := starter.Start(config); err != nil {
 			errs = errorsx.Append(errs, errorsx.Annotate(err, "source", source.Name()))
+		}
+	}
+	return errs
+}
+
+// finish gives every Finisher its chance to act once the outermost walk is
+// over, called on the same scoped sources start was. Errors aggregate rather than stopping
+// at the first.
+func (config *Config) finish() error {
+	var errs error
+	for _, source := range config.sources {
+		finisher, ok := source.(Finisher)
+		if !ok {
+			continue
+		}
+		if err := finisher.Finish(config); err != nil {
+			errs = errorsx.Append(errs, err)
 		}
 	}
 	return errs

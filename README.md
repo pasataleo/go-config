@@ -52,7 +52,11 @@ A source that also implements `config.DynamicSource` is given an `Enter` on the 
 
 A source that implements `config.Starter` is given a `Start` at the beginning of every `Assign`, before any field is visited. It is called on whichever `Source` will assign the walk's fields — for a `DynamicSource` that is the scope its own `Enter` opened, which is what makes the work belong to that one walk. That is where `inject` installs its registered modules, so what they bind goes with the walk. A source that is not a `DynamicSource` has no scope to be called in, so it is called on itself and whatever it does there outlives the walk.
 
-`Find` calls neither, so it stays read-only.
+Sources share what they learn during an `Assign` through `cfg.Data()`, a `map[string]any` created by the outermost `Assign` and shared with every `Assign` nested inside it — the ones a source makes through the `Config` it was handed, as `inject` does to populate a module. Each source documents the keys it writes, and a reader has to cope with a key being absent, since the source that writes it may not be configured. `Data` is nil during `Find`.
+
+A source that implements `config.Finisher` is given a `Finish` once per `Assign` the caller made, at the end of the outermost one. It is for checks that span fields, built up in `Data` as the walk hands the source one field at a time. Its errors join the walk's own, and it runs even when the walk failed, so a problem spanning fields is reported alongside the ones found in them. That is where `oneof` checks its groups.
+
+`Find` calls none of them, so it stays read-only.
 
 A source implementing `config.AdditionalTargets` brings structs of its own to be populated, beyond the one passed to `Assign`. A module registered on an inject `Source` is such a struct: it holds flags and environment variables like any other, but nothing the caller owns points at it. `Find` does not walk them — it reports the one struct it is given, so a caller building help text calls `Find` on each additional target as well and merges:
 
@@ -95,6 +99,36 @@ Dependency injection for struct fields, matched by `inject` struct tag or by typ
 ### `required`
 
 Validates that fields marked with the `required` struct tag have been set to a non-zero value. Returns an error for any that are missing.
+
+A field whose name the `oneof` source has put in a group is not failed on its own: it is recorded as unset in `cfg.Data()` under `oneof.UnsetKey`, and `oneof` decides. `required` works without `oneof`; a field with a `oneof` tag is then just required on its own.
+
+### `oneof`
+
+Makes required fields alternatives: fields tagged `oneof:"<group>"` form a group, and exactly one name in it must be set. It only works alongside `required`, which it depends on: every field in a group needs a `required` tag, and `required.Source` has to be configured too.
+
+```go
+type Server struct {
+    Port   int    `flag:"port" required:"port" oneof:"listen"`
+    Socket string `flag:"socket" required:"socket" oneof:"listen"`
+}
+
+c := config.New(
+    &oneof.Source{},          // first, before anything claims a field
+    flags.NewSource(values),
+    &env.Source{},
+    &defaults.Source{},
+    &required.Source{},       // last, records which names were not set
+)
+```
+
+Neither set fails with `config.MissingValue` ("required value not set: one of port, socket"), and both set fails with `config.ConflictingValues`. Set means the same as for a plain required field: a source provided it, so `--port 0` counts, or the struct already held a value.
+
+A group's members are named by their `required` tag, and groups are global, as flag names are: a field joins its group from whichever struct it is in, including the modules `inject` populates with `Assign`s of their own, and a name read in several places is one member.
+
+- `oneof` has to come before every source that claims fields, so it sees each field before one is claimed. It records each group's names in `cfg.Data()` under `oneof.Key`, and never claims a field itself.
+- `required` is what records which names were not set, under `oneof.UnsetKey`. Without it, every name in a group looks set.
+- `oneof` without `required` on a field is a programming mistake, and panics.
+- `Find` reports a field's group, so help text can show the alternatives together.
 
 ### `hidden`
 
