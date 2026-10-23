@@ -58,19 +58,23 @@ func (s *Source) Assign(_ *config.Config, path reflectx.Path, value reflect.Valu
 	vals := s.values[tag]
 	negVals := s.values["no-"+tag]
 
-	unpacked := reflectx.Unpack(value)
-
-	if unpacked.Kind() == reflect.Bool && len(negVals) > 0 {
+	// Nothing is unpacked until a flag is going to set the field: unpacking
+	// allocates a nil pointer, and a field no flag was given for has to stay
+	// as it was, so that the sources after this one - defaults, required -
+	// still see it unset. The type says whether --no-<flag> applies.
+	if reflectx.UnpackType(field.Type).Kind() == reflect.Bool && len(negVals) > 0 {
 		if len(vals) > 0 {
 			return true, errorsx.Annotate(errorsx.Newf(config.InvalidValue, nil, "cannot set both --%s and --no-%s", tag, tag), "path", path)
 		}
-		unpacked.SetBool(false)
+		reflectx.Unpack(value).SetBool(false)
 		return true, nil
 	}
 
 	if len(vals) == 0 {
 		return false, nil
 	}
+
+	unpacked := reflectx.Unpack(value)
 
 	var errs error
 	for _, v := range vals {

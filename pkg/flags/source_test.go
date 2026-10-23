@@ -4,6 +4,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/pasataleo/go-config/pkg/config"
+	"github.com/pasataleo/go-config/pkg/defaults"
+	"github.com/pasataleo/go-config/pkg/required"
 	"github.com/pasataleo/go-reflectx/pkg/reflectx"
 	"github.com/pasataleo/go-testingx/pkg/diff"
 	"github.com/pasataleo/go-testingx/pkg/render"
@@ -103,6 +106,44 @@ func TestAssign(t *testing.T) {
 				Claimed string `flag:"claimed"`
 			}{},
 		},
+		// A pointer field is only allocated when a flag sets it.
+		"pointer_no_value": {
+			values: map[string][]string{},
+			in: &struct {
+				Count *int  `flag:"count"`
+				On    *bool `flag:"on"`
+			}{},
+			want: &struct {
+				Count *int  `flag:"count"`
+				On    *bool `flag:"on"`
+			}{},
+		},
+		"pointer_zero_value": {
+			values: map[string][]string{
+				"count": {"0"},
+			},
+			in: &struct {
+				Count *int `flag:"count"`
+			}{},
+			want: &struct {
+				Count *int `flag:"count"`
+			}{
+				Count: ptr(0),
+			},
+		},
+		"pointer_negated": {
+			values: map[string][]string{
+				"no-on": {""},
+			},
+			in: &struct {
+				On *bool `flag:"on"`
+			}{},
+			want: &struct {
+				On *bool `flag:"on"`
+			}{
+				On: ptr(false),
+			},
+		},
 	}
 	for name, tc := range tcs {
 		t.Run(name, func(t *testing.T) {
@@ -112,4 +153,40 @@ func TestAssign(t *testing.T) {
 				diff.WithRenderOpts(render.NewOpts(t, render.WithSkipUnexported(true))))
 		})
 	}
+}
+
+func ptr[T any](v T) *T {
+	return &v
+}
+
+// TestAssign_leavesUnsetFieldsToLaterSources runs flags ahead of defaults and
+// required, as a program does. A flag that was not given must leave its field
+// as it was, or those sources see a value that nobody set.
+func TestAssign_leavesUnsetFieldsToLaterSources(t *testing.T) {
+	t.Run("default applies", func(t *testing.T) {
+		in := &struct {
+			Count *int `flag:"count" default:"5"`
+		}{}
+
+		testingx.Call(t, config.New(NewSource(nil), new(defaults.Source)).Assign, in).NoError()
+		testingx.Capture(t, in.Count).Equal(ptr(5))
+	})
+
+	t.Run("flag beats default", func(t *testing.T) {
+		in := &struct {
+			Count *int `flag:"count" default:"5"`
+		}{}
+
+		values := map[string][]string{"count": {"0"}}
+		testingx.Call(t, config.New(NewSource(values), new(defaults.Source)).Assign, in).NoError()
+		testingx.Capture(t, in.Count).Equal(ptr(0))
+	})
+
+	t.Run("required reports it missing", func(t *testing.T) {
+		in := &struct {
+			Name *string `flag:"name" required:"name"`
+		}{}
+
+		testingx.Call(t, config.New(NewSource(nil), new(required.Source)).Assign, in).ErrorCode(config.MissingValue)
+	})
 }

@@ -33,10 +33,9 @@
 - A nil module field installs nothing instead of panicking
 - A module with no address behind it - a value a binding put in an interface field, which cannot be populated - panics with an `InvalidModule` code rather than failing somewhere deeper in the walk. Wiring the injector up wrongly panics, as a duplicate binding already did; errors are for values a user supplied
 
-<!--
 ## BUG FIXES
-Issues that have been resolved.
--->
+
+- The `flags` source no longer initialises pointer fields when no flag value has been provided.
 
 <!--
 ## SECURITY
