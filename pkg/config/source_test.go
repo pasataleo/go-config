@@ -63,8 +63,8 @@ func TestFinish_errorsJoinTheWalks(t *testing.T) {
 	err := New(r).Assign(new(target))
 
 	testingx.Capture(t, len(errorsx.Errors(err))).Equal(2)
-	testingx.Capture(t, errorsx.IsCode(err, InvalidValue)).True()
-	testingx.Capture(t, errorsx.IsCode(err, MissingValue)).True()
+	testingx.Capture(t, err).HasErrorCode(InvalidValue)
+	testingx.Capture(t, err).HasErrorCode(MissingValue)
 }
 
 func TestFinish_notCalledByFind(t *testing.T) {
