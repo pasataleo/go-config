@@ -11,7 +11,7 @@ import (
 	"github.com/pasataleo/go-config/pkg/flags"
 	"github.com/pasataleo/go-config/pkg/inject"
 	"github.com/pasataleo/go-config/pkg/required"
-	"github.com/pasataleo/go-reflectx/pkg/reflectx"
+	reflectx "github.com/pasataleo/go-reflectx/pkg/reflectx/testing"
 	"github.com/pasataleo/go-testingx/pkg/diff"
 	"github.com/pasataleo/go-testingx/pkg/render"
 	"github.com/pasataleo/go-testingx/pkg/testingx"

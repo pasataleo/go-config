@@ -7,6 +7,7 @@ import (
 
 	"github.com/pasataleo/go-config/pkg/config"
 	"github.com/pasataleo/go-reflectx/pkg/reflectx"
+	reflectxtesting "github.com/pasataleo/go-reflectx/pkg/reflectx/testing"
 	"github.com/pasataleo/go-testingx/pkg/diff"
 	"github.com/pasataleo/go-testingx/pkg/render"
 	"github.com/pasataleo/go-testingx/pkg/testingx"
@@ -74,7 +75,7 @@ func TestFind(t *testing.T) {
 	for name, tc := range tcs {
 		t.Run(name, func(t *testing.T) {
 			testingx.Call(t, Find, tc.source, tc.in).
-				Equal(tc.want, diff.WithDiffer(new(reflectx.TypeDiffer)))
+				Equal(tc.want, diff.WithDiffer(new(reflectxtesting.TypeDiffer)))
 		})
 	}
 }
@@ -475,23 +476,17 @@ func TestGet(t *testing.T) {
 	})
 
 	t.Run("try_reports_an_unbound_type", func(t *testing.T) {
-		got, ok := TryGet[int](New())
-		testingx.Capture(t, got).Equal(0)
-		testingx.Capture(t, ok).False()
+		testingx.Call(t, TryGet[int], New()).False().Equal(0)
 	})
 
 	t.Run("try_reports_an_unbound_tag", func(t *testing.T) {
-		got, ok := TryGetTag[string](New(), "missing")
-		testingx.Capture(t, got).Equal("")
-		testingx.Capture(t, ok).False()
+		testingx.Call(t, TryGetTag[string], New(), "missing").False().Equal("")
 	})
 
 	t.Run("try_returns_a_binding_that_is_there", func(t *testing.T) {
 		s := New()
 		s.Bind("hello", "greeting")
-		got, ok := TryGetTag[string](s, "greeting")
-		testingx.Capture(t, got).Equal("hello")
-		testingx.Capture(t, ok).True()
+		testingx.Call(t, TryGetTag[string], s, "greeting").True().Equal("hello")
 	})
 
 	t.Run("install_reads_the_scope_the_module_was_found_in", func(t *testing.T) {
@@ -1055,7 +1050,7 @@ func TestFindPointerVariants(t *testing.T) {
 		testingx.Call(t, Find, s, &cfg{}).
 			Equal(map[string]Match{
 				"Count": {Type: reflect.TypeFor[*int]()},
-			}, diff.WithDiffer(new(reflectx.TypeDiffer)))
+			}, diff.WithDiffer(new(reflectxtesting.TypeDiffer)))
 	})
 
 	t.Run("bind_value_find_pointer_field_by_type", func(t *testing.T) {
@@ -1067,6 +1062,6 @@ func TestFindPointerVariants(t *testing.T) {
 		testingx.Call(t, Find, s, &cfg{}).
 			Equal(map[string]Match{
 				"Count": {Type: reflect.TypeFor[int]()},
-			}, diff.WithDiffer(new(reflectx.TypeDiffer)))
+			}, diff.WithDiffer(new(reflectxtesting.TypeDiffer)))
 	})
 }
