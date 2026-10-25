@@ -1065,3 +1065,63 @@ func TestFindPointerVariants(t *testing.T) {
 			}, diff.WithDiffer(new(reflectxtesting.TypeDiffer)))
 	})
 }
+
+// opaque has only unexported state, as a *plugin.Table or *sql.DB does. The
+// walk still allocates a nil pointer to it, so only inject can tell whether
+// one was bound.
+type opaque struct{ state map[string]int }
+
+// `inject:""` matches by type, like a field with no tag, but requires a
+// binding, as a named tag does.
+func TestAssign_emptyTagRequiresByType(t *testing.T) {
+	t.Run("bound", func(t *testing.T) {
+		s := New()
+		bound := &opaque{state: map[string]int{"a": 1}}
+		s.Bind(bound)
+
+		in := &struct {
+			Value *opaque `inject:""`
+		}{}
+		testingx.Call(t, Assign, s, in).NoError()
+		// The very value bound, not one the walk allocated.
+		testingx.Capture(t, in.Value == bound).True()
+	})
+
+	t.Run("not bound", func(t *testing.T) {
+		in := &struct {
+			Value *opaque `inject:""`
+		}{}
+		testingx.Panics(t, nil, func() { _ = Assign(New(), in) })
+	})
+
+	t.Run("optional", func(t *testing.T) {
+		in := &struct {
+			Value string `inject:";optional"`
+		}{}
+		testingx.Call(t, Assign, New(), in).NoError()
+		testingx.Capture(t, in.Value).Equal("")
+	})
+
+	// Without a tag, a missing binding is not inject's concern, as before.
+	t.Run("no tag", func(t *testing.T) {
+		in := &struct {
+			Value string
+		}{}
+		testingx.Call(t, Assign, New(), in).NoError()
+	})
+}
+
+// Find reads the tag the way Assign does, so an optional tag still finds its
+// binding, and an empty tag finds one by type.
+func TestFind_tags(t *testing.T) {
+	s := New()
+	s.Bind("hello", "greeting")
+	s.Bind(42)
+
+	found := config.Find(s, &struct {
+		Optional string `inject:"greeting;optional"`
+		ByType   int    `inject:""`
+	}{})
+	testingx.Capture(t, found["Optional"]).Equal(Match{Tag: "greeting"})
+	testingx.Capture(t, found["ByType"]).Equal(Match{Type: reflect.TypeFor[int]()}, reflectxtesting.WithTypeDiffer)
+}

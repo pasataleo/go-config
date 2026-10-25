@@ -28,6 +28,8 @@
 
 - The `flags` source no longer initialises pointer fields when no flag value has been provided.
 - A module that installs itself panics with `ModuleCycle` instead of recursing until it runs out of memory.
+- `inject:""` matches by type and requires a binding, rather than looking for a binding tagged with the empty string.
+- `Find` strips `;optional` from an `inject` tag before looking up the binding.
 
 <!--
 ## SECURITY

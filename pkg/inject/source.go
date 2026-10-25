@@ -287,15 +287,16 @@ func (s *Source) Name() string {
 }
 
 func (s *Source) Find(_ *config.Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (interface{}, error) {
-	if tag, ok := field.Tag.Lookup("inject"); ok {
-		r, exists := s.lookupByTag(tag)
+	t := parseInjectTag(field)
+	if t.name != "" {
+		r, exists := s.lookupByTag(t.name)
 		if !exists {
 			return nil, nil
 		}
 		if !canAssign(r.outType, field.Type) {
-			return Match{Tag: tag}, errorsx.Annotate(errorsx.Newf(TypeMismatch, nil, "type %s is not assignable to %s", r.outType, field.Type), "path", path)
+			return Match{Tag: t.name}, errorsx.Annotate(errorsx.Newf(TypeMismatch, nil, "type %s is not assignable to %s", r.outType, field.Type), "path", path)
 		}
-		return Match{Tag: tag}, nil
+		return Match{Tag: t.name}, nil
 	}
 
 	if r, ok := s.lookupByType(field.Type); ok {
@@ -304,16 +305,35 @@ func (s *Source) Find(_ *config.Config, path reflectx.Path, value reflect.Value,
 	return nil, nil
 }
 
-func (s *Source) Assign(cfg *config.Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (bool, error) {
-	if tag, ok := field.Tag.Lookup("inject"); ok {
-		tag, optional := strings.CutSuffix(tag, ";optional")
+// injectTag is a field's inject tag, read the same way by Find and Assign.
+//
+// No tag, or `inject:";optional"`, matches by type and leaves the field alone
+// when nothing is bound. `inject:""` also matches by type, but the field says
+// it must be injected, so nothing bound is a wiring mistake. `inject:"name"`
+// matches the binding with that tag, required unless `;optional` follows it.
+type injectTag struct {
+	name     string
+	required bool
+}
 
-		r, exists := s.lookupByTag(tag)
+func parseInjectTag(field reflect.StructField) injectTag {
+	tag, ok := field.Tag.Lookup("inject")
+	if !ok {
+		return injectTag{}
+	}
+	name, optional := strings.CutSuffix(tag, ";optional")
+	return injectTag{name: name, required: !optional}
+}
+
+func (s *Source) Assign(cfg *config.Config, path reflectx.Path, value reflect.Value, field reflect.StructField) (bool, error) {
+	t := parseInjectTag(field)
+	if t.name != "" {
+		r, exists := s.lookupByTag(t.name)
 		if !exists {
-			if optional {
+			if !t.required {
 				return false, s.installModule(cfg, path, value, false)
 			}
-			panic(fmt.Errorf("required value not found for tag at %s: %s%s", path, tag, s.while()))
+			panic(fmt.Errorf("required value not found for tag at %s: %s%s", path, t.name, s.while()))
 		}
 		v, err := r.resolve(value)
 		if err != nil {
@@ -325,6 +345,9 @@ func (s *Source) Assign(cfg *config.Config, path reflectx.Path, value reflect.Va
 
 	r, ok := s.lookupByType(field.Type)
 	if !ok {
+		if t.required {
+			panic(fmt.Errorf("required value not found for type at %s: %s%s", path, field.Type, s.while()))
+		}
 		return false, s.installModule(cfg, path, value, false)
 	}
 	v, err := r.resolve(value)

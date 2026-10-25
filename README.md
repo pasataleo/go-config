@@ -90,6 +90,17 @@ Sets default values via the `default` struct tag. Skips fields that already have
 
 Dependency injection for struct fields, matched by `inject` struct tag or by type.
 
+| Field | Matches | Nothing bound |
+|---|---|---|
+| no `inject` tag | by type | left alone |
+| `inject:""` | by type | panics |
+| `inject:";optional"` | by type | left alone |
+| `inject:"name"` | the binding tagged `name` | panics |
+| `inject:"name;optional"` | the binding tagged `name` | left alone |
+
+A field that has to be injected should say so with `inject:""` or a tag: a pointer to a struct is allocated by the walk
+whether or not anything is bound, so it cannot be told apart from an injected one afterwards.
+
 - `source.Bind(value, tags...)` — bind a static value
 - `source.BindFunc(fn, tags...)` — bind a factory function that receives the current field value
 - `source.Register(modules...)` — queue root modules for every `Assign` to install
