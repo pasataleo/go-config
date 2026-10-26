@@ -2,13 +2,8 @@
 
 ## FEATURES
 
-- `config.DynamicSource`, for sources whose bindings change as the walk goes down: `Enter` returns the source to use for a field and everything below it.
-- `config.Starter`, an optional source interface called at the start of every `Assign`.
-- `config.Finisher`, an optional source interface called at the end of the outermost `Assign`.
-- `config.AdditionalTargets`, for structs a source brings along itself, such as registered inject modules.
-- `Config.Data`, a map sources share during one `Assign`, including the `Assign`s nested inside it.
-- `config.ConflictingValues` error code.
-- `oneof` source: required fields tagged `oneof:"<group>"` are alternatives, and exactly one in each group must be set.
+- Optional source interfaces: `DynamicSource` scopes a source to a field and everything below it, `Starter` and `Finisher` run at the start and end of an `Assign`, and `AdditionalTargets` reports structs a source brings along, with `Config.Data` for sources to share state during one `Assign`.
+- `oneof` source: required fields tagged `oneof:"<group>"` are alternatives, and exactly one in each group must be set, failing with the new `config.ConflictingValues` when several are.
 - `inject.Source.Register` queues modules to install at the start of every `Assign`.
 - `inject.Get`, `inject.GetTag`, `inject.TryGet` and `inject.TryGetTag` read a binding back without a field.
 - `inject` error codes: `NotBound`, `TypeMismatch`, `ModuleCycle` and `InvalidModule`.
@@ -16,12 +11,8 @@
 ## IMPROVEMENTS
 
 - `inject` bindings are scoped to the struct that installed them, and shadow bindings from further out.
-- A module field the walk reaches is installed, not only one a binding claimed.
-- A module can be installed through an interface-typed field, or through its field's address when `Install` has a value receiver.
-- A module instance reached twice in one `Assign` is installed once.
-- A nil module field is skipped instead of panicking.
-- `config.Assign` uses `Config.Assign` rather than its own walk.
-- `inject.New` no longer allocates its maps up front.
+- A module is installed wherever the walk reaches it, once per `Assign`: through a binding, an interface-typed field, or a value-receiver `Install`, with a nil module field skipped.
+- `config.Assign` honours `DynamicSource`, `Starter` and `Finisher`, as `Config.Assign` does.
 - Failed assignments and install panics name the type, module and path involved.
 
 ## BUG FIXES
@@ -52,6 +43,8 @@ Functionality that will be removed in a future release.
 
 - Hoist a module whose bindings must be seen outside its struct, or re-`Bind` them from the enclosing module.
 - A tag bound by two modules at different levels now shadows instead of panicking.
+- Call `Register` on the injector `inject.New` returned, before the first `Assign`; a module that needs another module declares it as a field rather than registering it from `Install`.
+- A module that keeps the `Source` its `Install` was given must not bind into it after that `Assign` returns: the scope ends with it.
 
 # v0.1.0
 
