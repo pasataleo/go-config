@@ -1,8 +1,8 @@
 github.com/pasataleo/go-colour v0.1.0 h1:opkRCqIc7fOmplO8gNbwmAZ/+dePv6HQMcNj7IAxH6I=
 github.com/pasataleo/go-colour v0.1.0/go.mod h1:ICaTBjPeIGf5LB6RpKwGq9NIsUjgf7A/+w0SxWEmYhg=
-github.com/pasataleo/go-errorsx v0.1.0 h1:BVEDt3fpaa3o4W7lNqm1Mn+SITL64lIQ0ewrDCRyGr4=
-github.com/pasataleo/go-errorsx v0.1.0/go.mod h1:MN0UXEx7Jh3nE68dweYIOP13Qdo3wMNCDKLGTSnjc2Y=
-github.com/pasataleo/go-reflectx v0.1.1-0.20261025094750-0e9485f46759 h1:NG07GJQAQ54xab0I/2BTyn2ah4JsaLIflA6T5D4+8qA=
-github.com/pasataleo/go-reflectx v0.1.1-0.20261025094750-0e9485f46759/go.mod h1:HKgS/Eg53sLm6plIjzNwrT2BPRk4ZpPP13XcsRsbZt8=
-github.com/pasataleo/go-testingx v0.1.1-0.20261025064809-0f0ac56e57fc h1:h611kFYiMhsyfMV0HL2Jtc9iVNYzldaWZEvVBTyNPJQ=
-github.com/pasataleo/go-testingx v0.1.1-0.20261025064809-0f0ac56e57fc/go.mod h1:Y+/yt+o7T71yAXBIsQWWjVrZxZGQifgNGX2RxwIYgKM=
+github.com/pasataleo/go-errorsx v0.1.1-0.20261026164359-7e859e347e49 h1:ywGYoCe2fMUxu/aJbQ8TMJYzyfyPR7qMWsuHVSHKG+k=
+github.com/pasataleo/go-errorsx v0.1.1-0.20261026164359-7e859e347e49/go.mod h1:MN0UXEx7Jh3nE68dweYIOP13Qdo3wMNCDKLGTSnjc2Y=
+github.com/pasataleo/go-reflectx v0.1.1-0.20261111132744-94ded3601320 h1:Lo6ogI6NE5WYVtM+al9A0TFiJbO/FbwPG3a2rPJGqYc=
+github.com/pasataleo/go-reflectx v0.1.1-0.20261111132744-94ded3601320/go.mod h1:+k6+WTxSjqZ5nYe4IiZi646lB9k+Ufvz00mL2c5m0Es=
+github.com/pasataleo/go-testingx v0.1.1-0.20261111132723-d87d4f343707 h1:XokZCohG+EQGU8yGXeaP8oQfmTTmtC6H8D0ocNMj7lA=
+github.com/pasataleo/go-testingx v0.1.1-0.20261111132723-d87d4f343707/go.mod h1:kYjt51puOFN8o0Xfb6q7qnobR61twDM0r8PF8vsBq/k=
