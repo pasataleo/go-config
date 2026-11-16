@@ -31,7 +31,7 @@ jobs:
 
       - name: Read golangci-lint version
         id: golangci-version
-        run: echo "version=$(jq -r .version .golangci.json)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(jq -r '.["golangci-lint"].version' .tool-versions.json)" >> "$GITHUB_OUTPUT"
 
       - uses: golangci/golangci-lint-action@v8
         with:
