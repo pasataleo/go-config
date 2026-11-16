@@ -1,12 +1,13 @@
-.PHONY: all test build lint lint_install tidy generate fmt
+.PHONY: all test build lint lint_install tidy generate fmt install-hooks
 
 GOLANGCI_LINT_VERSION := v$(shell jq -r '.["golangci-lint"].version' .tool-versions.json)
+GIT_HOOKS_DIR := $(shell git rev-parse --git-path hooks)
 
-all: .git/hooks/pre-commit tidy generate fmt lint test build
+all: install-hooks tidy generate fmt lint test build
 
-.git/hooks/pre-commit: .githooks/pre-commit
-	@mkdir -p .git/hooks
-	@cp $< $@ && chmod +x $@
+install-hooks:
+	@mkdir -p $(GIT_HOOKS_DIR)
+	@cp .githooks/pre-commit $(GIT_HOOKS_DIR)/pre-commit && chmod +x $(GIT_HOOKS_DIR)/pre-commit
 
 test:
 	go test ./...
