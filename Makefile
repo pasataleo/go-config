@@ -1,8 +1,12 @@
 .PHONY: all test build lint lint_install tidy generate fmt
 
-GOLANGCI_LINT_VERSION := v2.15.0
+GOLANGCI_LINT_VERSION := v$(shell sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' .golangci.json)
 
-all: tidy generate fmt lint test build
+all: .git/hooks/pre-commit tidy generate fmt lint test build
+
+.git/hooks/pre-commit: .githooks/pre-commit
+	@mkdir -p .git/hooks
+	@cp $< $@ && chmod +x $@
 
 test:
 	go test ./...

@@ -29,6 +29,13 @@ jobs:
             exit 1
           fi
 
-      - run: make lint
+      - name: Read golangci-lint version
+        id: golangci-version
+        run: echo "version=$(jq -r .version .golangci.json)" >> "$GITHUB_OUTPUT"
+
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v${{ steps.golangci-version.outputs.version }}
+
       - run: make test
       - run: make build
